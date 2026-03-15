@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+memory/vector_db/
+memory/long_term/
+memory/raw/
+*.log

@@ -1,0 +1,15 @@
+base_dir: "memory"
+raw_dir: "memory/raw"
+daily_dir: "memory/daily"
+long_term_dir: "memory/long_term"
+vector_db_path: "memory/vector_db"
+
+embedding_model: "nomic-ai/nomic-embed-text-v1.5"
+embedding_dimension: 768
+
+importance_threshold: 0.6
+digest_interval_days: 7
+digest_batch_size: 50
+
+use_zfs_snapshot: false
+vllm_url: "http://localhost:8000/v1/chat/completions"
