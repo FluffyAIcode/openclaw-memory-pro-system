@@ -1,6 +1,6 @@
-# OpenClaw MindSystem
+# OpenClaw Memory Pro System
 
-A multi-layered cognitive architecture for the [OpenClaw](https://github.com/nicholasgasior/openclaw) AI agent framework. Goes beyond passive conversation logging — four interconnected subsystems enable semantic retrieval, continual learning, document-level reasoning, and autonomous inspiration generation.
+A production-grade memory architecture for the [OpenClaw](https://github.com/nicholasgasior/openclaw) AI agent framework. Four interconnected subsystems turn passive conversation logging into semantic retrieval, continual learning, document-level reasoning, and autonomous inspiration generation.
 
 ## Architecture
 
@@ -110,7 +110,7 @@ Each collision is evaluated by an LLM that scores novelty (1–5) and generates 
 ### Installation
 
 ```bash
-cd /path/to/openclaw-mindsystem
+cd /path/to/openclaw-memory-pro-system
 
 # Core install
 pip install -e .
