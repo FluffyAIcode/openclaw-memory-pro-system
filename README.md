@@ -1,6 +1,6 @@
 # OpenClaw Memory Pro System
 
-A production-grade memory architecture for the [OpenClaw](https://github.com/nicholasgasior/openclaw) AI agent framework. Four interconnected subsystems turn passive conversation logging into semantic retrieval, continual learning, document-level reasoning, and autonomous inspiration generation.
+A production-grade cognitive architecture for the [OpenClaw](https://github.com/nicholasgasior/openclaw) AI agent framework. Five interconnected subsystems — including a **Knowledge Graph cognitive engine** — turn passive conversation logging into semantic retrieval, continual learning, document-level reasoning, structured logical reasoning, and autonomous inspiration generation.
 
 ## Architecture
 
@@ -22,20 +22,55 @@ A production-grade memory architecture for the [OpenClaw](https://github.com/nic
 │  │                     Memory Hub (router)                   │   │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────┐ │   │
 │  │  │  Memora   │ │ Chronos  │ │   MSA    │ │Second Brain │ │   │
-│  │  │  (RAG)   │ │  (CL)    │ │ (Sparse) │ │ (Insights)  │ │   │
-│  │  └──────────┘ └──────────┘ └──────────┘ └─────────────┘ │   │
+│  │  │  (RAG)   │ │  (CL)    │ │ (Sparse) │ │(KG+Insights)│ │   │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────┬──────┘ │   │
+│  │                                                 │        │   │
+│  │  ┌──────────────────────────────────────────────▼──────┐ │   │
+│  │  │           Knowledge Graph (NetworkX DiGraph)         │ │   │
+│  │  │  Nodes: fact/decision/preference/goal/question       │ │   │
+│  │  │  Edges: supports/contradicts/extends/depends_on      │ │   │
+│  │  │  → Contradiction Detection                           │ │   │
+│  │  │  → Absence Reasoning (Blind Spot Detection)          │ │   │
+│  │  │  → Forward Propagation (Impact Tracing)              │ │   │
+│  │  │  → Thread Discovery (Community Detection)            │ │   │
+│  │  └─────────────────────────┬────────────────────────────┘ │   │
+│  │                            │ mature patterns              │   │
+│  │                            ▼                              │   │
+│  │                   Internalization Manager                  │   │
+│  │                   → Chronos PERSONALITY.yaml               │   │
+│  │                   → LoRA training data (future)            │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Four Memory Subsystems
+### Five Memory Subsystems
 
 | System | Purpose | Storage | Key Capability |
 |--------|---------|---------|----------------|
 | **Memora** | Snippet-level semantic search | Vector store (JSONL) | RAG with real embeddings, LLM-powered daily digests |
 | **Chronos** | Continual learning | Replay buffer + EWC state | Importance-weighted memory encoding, personality profile generation |
 | **MSA** | Document-level reasoning | Tiered (routing keys in RAM, content on disk) | Sparse attention routing, multi-hop interleave with LLM |
-| **Second Brain** | Active memory lifecycle | Access log + insights | Vitality tracking, dormancy detection, inspiration collision |
+| **Second Brain** | Active memory lifecycle + cognitive reasoning | Access log + insights + KG | Vitality tracking, inspiration collision, **Knowledge Graph** |
+| **Knowledge Graph** | Structured logical reasoning | NetworkX DiGraph (JSONL) | Contradiction detection, absence reasoning, forward propagation |
+
+### Knowledge Graph — What RAG Cannot Do
+
+The Knowledge Graph is the core differentiator of this system. While RAG retrieves by cosine similarity, the KG reasons by typed logical relationships:
+
+| Capability | RAG | Knowledge Graph |
+|------------|-----|-----------------|
+| Find similar content | Yes | — |
+| Find logically related content (even if semantically distant) | No | **Yes** — graph traversal along typed edges |
+| Detect contradictions | No | **Yes** — `contradicts` edges between facts and decisions |
+| Discover blind spots (what hasn't been considered) | No | **Yes** — absence reasoning: expected dimensions minus covered dimensions |
+| Trace impact of new information | No | **Yes** — forward propagation along `depends_on`/`supports` chains |
+| Auto-discover thought threads | No | **Yes** — community detection on the graph |
+
+**How it works:**
+1. Every `/remember` call triggers async relation extraction (LLM + embedding pre-filter)
+2. LLM identifies knowledge units (facts, decisions, preferences, goals, questions) and their logical relationships
+3. The inference engine continuously monitors for contradictions, blind spots, and impact chains
+4. High-maturity patterns (frequently accessed, high confidence, stable over time) feed into Chronos for PERSONALITY.yaml generation — the "internalization pipeline" from explicit (KG) to implicit (model behavior) memory
 
 ### Service Layer
 
@@ -44,8 +79,9 @@ A production-grade memory architecture for the [OpenClaw](https://github.com/nic
 | **Memory Hub** | Unified router — auto-selects subsystems based on content length, importance, and query type |
 | **Memory Server** | Persistent HTTP daemon — keeps the embedding model loaded, exposes all operations as REST endpoints, async task queue for slow operations |
 | **memory-cli** | Zero-dependency HTTP client — async polling with progress spinner for long-running tasks |
-| **LLM Client** | Unified xAI Grok API wrapper — used by digest, interleave, consolidation, and collision |
-| **Shared Embedder** | Singleton `nomic-ai/nomic-embed-text-v1.5` instance shared across Memora and MSA |
+| **LLM Client** | Unified xAI Grok API wrapper — used by digest, interleave, consolidation, collision, and KG relation extraction |
+| **Shared Embedder** | Singleton `nomic-ai/nomic-embed-text-v1.5` instance shared across Memora, MSA, and KG candidate pre-filtering |
+| **Internalization Manager** | Bridges KG (explicit) to Chronos (implicit) — extracts mature patterns for personality profiles and future LoRA training |
 
 ## How It Works
 
@@ -58,7 +94,8 @@ Content arrives at hub.remember()
     ├── 100-500 words + high importance ───> Memora + Chronos
     └── > 500 words ───────────────────────> Memora + MSA + Chronos
     │
-    └── Always writes to memory/YYYY-MM-DD.md (daily log)
+    ├── Always writes to memory/YYYY-MM-DD.md (daily log)
+    └── Async: KG relation extraction (if importance >= 0.4)
 ```
 
 ### Query Routing
@@ -90,15 +127,28 @@ The CLI handles this transparently with a polling spinner:
 
 ### Inspiration Collision (Second Brain)
 
-Every 6 hours, the collision engine runs 5 strategies against the full memory pool:
+Every 6 hours, the collision engine selects from **7 strategies** using adaptive weights (strategies that produce higher-rated insights get selected more often):
 
+**RAG-based strategies:**
 1. **Semantic Bridge** — Finds "distant relatives" (similarity 0.35–0.65) between memories
 2. **Dormant Revival** — Pairs sleeping high-importance memories with recent active ones
 3. **Temporal Echo** — Crosses today's memories with those from 7/30 days ago
-4. **Chronos Cross-Reference** — Pairs encoded Chronos memories with different-source Memora entries, with Chronos context (facts, preferences, emotions) included in the LLM prompt
-5. **Digest Bridge** — Crosses digest summaries with individual memories for macro-micro connections
+4. **Chronos Cross-Reference** — Pairs Chronos structured memories with Memora entries
+5. **Digest Bridge** — Crosses digest summaries with individual memories
 
-Each collision is evaluated by an LLM that scores novelty (1–5) and generates actionable ideas. High-novelty insights (≥4) are automatically indexed back into Memora for future retrieval.
+**KG-driven strategies (fundamentally different from RAG):**
+6. **Contradiction-Based** — Uses KG contradiction edges to surface decisions at risk, ranked by evidence balance
+7. **Blind Spot-Based** — Uses KG absence reasoning to identify unexplored dimensions in important decisions
+
+Each collision is evaluated by an LLM that scores novelty (1–5). Users can rate insights (`memory-cli rate <id> <1-5>`), and the system automatically adjusts strategy selection weights.
+
+### Feedback Loop
+
+```
+Collision → Insight → User Rating → Strategy Weight Update → Better Collisions
+```
+
+Strategy weights persist in `memory/insights/strategy_weights.json`. Strategies with consistently high ratings get selected more often; low-rated strategies are de-prioritized.
 
 ## Quick Start
 
@@ -147,7 +197,7 @@ The server loads the SentenceTransformer model once (~3s), then serves all reque
 ### Usage
 
 ```bash
-# Remember something (auto-routes to appropriate subsystems)
+# Remember something (auto-routes to appropriate subsystems + KG extraction)
 memory-cli remember "用户偏好深色主题，不喜欢弹窗通知" -i 0.9
 
 # Search memories
@@ -156,14 +206,23 @@ memory-cli recall "用户的UI偏好"
 # Deep multi-hop reasoning
 memory-cli deep-recall "根据用户过去的反馈，他们最可能接受什么样的新功能？"
 
-# Run inspiration collision
+# Run inspiration collision (7 strategies, adaptive weights)
 memory-cli collide
 
-# Check system status
-memory-cli status
+# Knowledge Graph — reasoning RAG cannot do
+memory-cli contradictions          # Find decisions with conflicting evidence
+memory-cli blindspots              # Detect unexplored dimensions in decisions
+memory-cli threads                 # Discover thought threads via community detection
+memory-cli graph-status            # KG statistics
 
-# View Second Brain report
+# Feedback loop
+memory-cli rate <insight_id> <1-5> # Rate an insight to improve future collisions
+memory-cli insight-stats           # View strategy performance
+
+# System status
+memory-cli status
 memory-cli sb-report
+memory-cli briefing                # Daily memory briefing
 ```
 
 ## Project Structure
@@ -189,9 +248,14 @@ memory-cli sb-report
 │   ├── router.py            # Batch cosine similarity top-k selection
 │   ├── interleave.py        # Multi-hop retrieval-generation loops
 │   └── bridge.py            # Integration with cross-indexing to Memora
-├── second_brain/            # Active memory lifecycle
+├── second_brain/            # Cognitive engine + active memory lifecycle
+│   ├── knowledge_graph.py   # KGNode/KGEdge + NetworkX DiGraph + JSONL persistence
+│   ├── relation_extractor.py # LLM-based relation extraction + embedding pre-filter
+│   ├── inference.py         # Contradiction detection, absence reasoning, propagation
+│   ├── internalization.py   # Maturity tracking, pattern extraction, training data
+│   ├── strategy_weights.py  # Adaptive collision strategy selection via ratings
 │   ├── tracker.py           # Vitality scoring, dormancy detection, trends
-│   ├── collision.py         # 5-strategy inspiration engine
+│   ├── collision.py         # 7-strategy inspiration engine (5 RAG + 2 KG-driven)
 │   └── bridge.py            # Unified interface
 ├── memory_server.py         # HTTP daemon with async task queue
 ├── memory_hub.py            # Unified ingestion/query router
@@ -199,11 +263,16 @@ memory-cli sb-report
 ├── llm_client.py            # xAI Grok API wrapper
 ├── shared_embedder.py       # Singleton embedding model
 ├── setup.py                 # Package configuration
-├── tests/                   # 332 unit tests across 11 files
+├── tests/                   # 447 unit tests across 16 files
 │   ├── test_memora.py
 │   ├── test_chronos.py
 │   ├── test_msa.py
 │   ├── test_second_brain.py
+│   ├── test_knowledge_graph.py
+│   ├── test_inference.py
+│   ├── test_relation_extractor.py
+│   ├── test_internalization.py
+│   ├── test_strategy_weights.py
 │   ├── test_memory_server.py
 │   ├── test_memory_hub.py
 │   └── ...
@@ -227,7 +296,7 @@ python3 -m pytest tests/ -q
 python3 -m pytest tests/ --cov=memora --cov=chronos --cov=msa --cov=second_brain --cov=memory_server --cov=memory_hub -q
 ```
 
-332 tests covering all subsystems, the server, the hub, and the CLI layer.
+447 tests covering all subsystems, the Knowledge Graph, the inference engine, the server, the hub, and the CLI layer.
 
 ## Embedding Model
 
