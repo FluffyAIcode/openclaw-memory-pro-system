@@ -63,13 +63,13 @@ class TestMemoryHub:
             hmod._WORKSPACE = orig_ws
         assert "msa" in result["systems_used"]
 
-    def test_remember_high_importance_routes_chronos(self, tmp_path):
+    def test_remember_high_importance_no_auto_chronos(self, tmp_path):
+        """In the new architecture, Chronos is NOT auto-routed; only on explicit force."""
         hmod = _get_hub_mod()
         orig_ws = hmod._WORKSPACE
         hmod._WORKSPACE = tmp_path
         try:
             hub = self._make_hub(tmp_path)
-            hub._chronos_bridge.learn_and_save.return_value = MagicMock(importance=0.95)
             mock_collector = MagicMock()
             mock_collector.collect.return_value = {"timestamp": "t"}
             mock_vs = MagicMock()
@@ -78,6 +78,18 @@ class TestMemoryHub:
                 "memora.vectorstore": MagicMock(vector_store=mock_vs),
             }):
                 result = hub.remember("important", importance=0.95)
+        finally:
+            hmod._WORKSPACE = orig_ws
+        assert "chronos" not in result["systems_used"]
+
+    def test_remember_force_chronos(self, tmp_path):
+        hmod = _get_hub_mod()
+        orig_ws = hmod._WORKSPACE
+        hmod._WORKSPACE = tmp_path
+        try:
+            hub = self._make_hub(tmp_path)
+            hub._chronos_bridge.learn_and_save.return_value = MagicMock(importance=0.95)
+            result = hub.remember("text", force_systems=["chronos"])
         finally:
             hmod._WORKSPACE = orig_ws
         assert "chronos" in result["systems_used"]
@@ -135,13 +147,7 @@ class TestMemoryHub:
         try:
             hub = self._make_hub(tmp_path)
             hub._chronos_bridge.learn_and_save.side_effect = Exception("fail")
-            mock_collector = MagicMock()
-            mock_collector.collect.return_value = {"timestamp": "t"}
-            with patch.dict(sys.modules, {
-                "memora.collector": MagicMock(collector=mock_collector),
-                "memora.vectorstore": MagicMock(),
-            }):
-                result = hub.remember("text", importance=0.95)
+            result = hub.remember("text", force_systems=["chronos"])
         finally:
             hmod._WORKSPACE = orig_ws
         assert "chronos" not in result["systems_used"]
@@ -224,7 +230,8 @@ class TestMemoryHub:
         hub = self._make_hub(tmp_path)
         assert "memora" in hub._route_ingestion(50, 0.5)
         assert "msa" in hub._route_ingestion(200, 0.5)
-        assert "chronos" in hub._route_ingestion(50, 0.9)
+        # Chronos is no longer auto-routed
+        assert "chronos" not in hub._route_ingestion(50, 0.9)
 
     def test_write_daily(self, tmp_path):
         hmod = _get_hub_mod()
@@ -233,9 +240,11 @@ class TestMemoryHub:
         try:
             from memory_hub import MemoryHub
             hub = MemoryHub()
-            hub._write_daily("content", "test", ["memora"])
+            hub._write_daily("content", "test", ["memora"], tag="thought")
             daily = list((tmp_path / "memory").glob("*.md"))
             assert len(daily) == 1
+            text = daily[0].read_text()
+            assert "#thought" in text
         finally:
             hmod._WORKSPACE = orig_ws
 
@@ -267,6 +276,25 @@ class TestMemoryHub:
             assert h3.msa == "mock_msa"
         finally:
             mbmod.bridge = orig_m
+
+    def test_remember_with_tag(self, tmp_path):
+        hmod = _get_hub_mod()
+        orig_ws = hmod._WORKSPACE
+        hmod._WORKSPACE = tmp_path
+        try:
+            hub = self._make_hub(tmp_path)
+            mock_collector = MagicMock()
+            mock_collector.collect.return_value = {"timestamp": "t"}
+            with patch.dict(sys.modules, {
+                "memora.collector": MagicMock(collector=mock_collector),
+                "memora.vectorstore": MagicMock(),
+            }):
+                result = hub.remember("my thought", tag="thought")
+                assert result["tag"] == "thought"
+                result2 = hub.remember("bad tag", tag="invalid_tag")
+                assert result2["tag"] is None
+        finally:
+            hmod._WORKSPACE = orig_ws
 
     def test_chinese_word_count(self, tmp_path):
         hmod = _get_hub_mod()

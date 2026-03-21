@@ -2,7 +2,7 @@
 Unified LLM client — calls xAI Grok API (OpenAI-compatible).
 
 Used by:
-  - memora/digest.py  (memory summarization)
+  - second_brain/digest.py  (memory summarization/distillation)
   - msa/interleave.py (multi-hop intermediate generation)
   - chronos/consolidator.py (personality profile generation)
 

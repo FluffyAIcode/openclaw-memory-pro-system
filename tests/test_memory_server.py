@@ -203,7 +203,7 @@ class TestMemoryHandler:
 
     def test_digest_endpoint(self):
         import memory_server
-        with patch("memora.digest.digest_memories", return_value=True):
+        with patch("second_brain.digest.digest_memories", return_value=True):
             body = json.dumps({"days": 3}).encode()
             handler, responses = self._make_handler("POST", "/digest", body)
             memory_server.MemoryHandler.do_POST(handler)

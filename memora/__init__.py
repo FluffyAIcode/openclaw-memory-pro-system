@@ -2,7 +2,7 @@ import logging
 
 from .collector import collector
 from .vectorstore import vector_store
-from .digest import digest_memories
+from second_brain.digest import digest_memories
 from .config import load_config
 
 __version__ = "1.0.0"

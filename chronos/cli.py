@@ -48,12 +48,12 @@ def main():
 
     elif args.command == "status":
         st = bridge.status()
-        console.print("[bold cyan]Chronos 系统状态[/bold cyan]")
-        console.print(f"  缓冲区: {st['buffer_size']} 条记忆")
-        console.print(f"  学习次数: {st['learn_count']}")
-        console.print(f"  EWC 模式: {st['ewc_mode']}")
-        console.print(f"  LoRA 适配器: {st['lora_adapters']}")
-        console.print(f"  记忆类型: 参数级记忆（以算代存）")
+        console.print("[bold cyan]Chronos 训练管线状态[/bold cyan]")
+        console.print(f"  缓冲区: {st.get('buffer_size', 0)} 条记忆")
+        console.print(f"  学习次数: {st.get('learn_count', 0)}")
+        nb = st.get("nebius", {})
+        console.print(f"  Nebius: {'已配置' if nb.get('configured') else '未配置'}")
+        console.print(f"  基础模型: {nb.get('base_model', 'N/A')}")
 
     elif args.command == "report":
         rpt = bridge.report()

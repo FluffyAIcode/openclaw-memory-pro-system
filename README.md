@@ -8,7 +8,7 @@ A production-grade cognitive architecture for the [OpenClaw](https://github.com/
 
 本仓库的**正式产品目标**如下（便于全文搜索：直接搜「产品目标」或下段关键词「碎片化」「非连续时间」）：
 
-> 在当前信息环境下，支持**人**与 **Agent** 以**碎片化、发散化、非连续时间**的方式学习——断断续续、东一点西一点、往往没有明确的课题或课表；同时期望通过**长期时间积累**，逐步实现**系统化**的理解、更**专业化**的深度，以及**可操作的**技能的目标。
+> 在当前信息环境下，支持**人**与 **Agent** 以**碎片化、发散化、非连续时间**的方式学习——断断续续、东一点西一点、往往没有明确的课题或课表；同时期望通过**长期时间积累**，逐步走向更**系统化**的理解、更**专业化**的深度，以及**可操作的**技能与规程。
 
 **North star（英文对照）：** Support humans and agents in today’s information environment through **fragmented, divergent, non-continuous learning** (patchy inputs, no fixed curriculum), while aiming—via **sustained accumulation over time**—for **systematic** understanding, **domain depth**, and **actionable** skills and procedures.
 
@@ -40,99 +40,64 @@ This section is the English mirror of **[产品目标](#产品目标)** above. T
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        memory-cli (HTTP)                        │
-│               thin client with async polling + spinner          │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP :18790
-┌────────────────────────────▼────────────────────────────────────┐
-│                      Memory Server (daemon)                     │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Shared Embedder (SentenceTransformer, loaded once)      │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Async Task Manager (ThreadPool, 3 workers)              │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                     Memory Hub (router)                   │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐                  │   │
-│  │  │  Memora   │ │ Chronos  │ │   MSA    │                  │   │
-│  │  │  (RAG)   │ │  (CL)    │ │ (Sparse) │                  │   │
-│  │  └──────────┘ └──────────┘ └──────────┘                  │   │
-│  │  ┌───────────────────────────────────────────────────┐    │   │
-│  │  │                  Second Brain                      │    │   │
-│  │  │  ┌─────────────────────────────────────────────┐  │    │   │
-│  │  │  │  Tracker (vitality, dormancy, trends)        │  │    │   │
-│  │  │  └─────────────────────────────────────────────┘  │    │   │
-│  │  │  ┌─────────────────────────────────────────────┐  │    │   │
-│  │  │  │  Collision Engine (7 strategies, adaptive)   │  │    │   │
-│  │  │  │  5 RAG-based + 2 KG-driven strategies       │  │    │   │
-│  │  │  └──────────────────────┬──────────────────────┘  │    │   │
-│  │  │                         │ read/write               │    │   │
-│  │  │  ┌──────────────────────▼──────────────────────┐  │    │   │
-│  │  │  │  Knowledge Graph (NetworkX DiGraph)          │  │    │   │
-│  │  │  │  Nodes: fact/decision/preference/goal/question│  │    │   │
-│  │  │  │  Edges: supports/contradicts/extends/...     │  │    │   │
-│  │  │  │  Storage: memory/kg/nodes.jsonl + edges.jsonl│  │    │   │
-│  │  │  └──────────────────────┬──────────────────────┘  │    │   │
-│  │  │                         │ inference                │    │   │
-│  │  │  ┌──────────────────────▼──────────────────────┐  │    │   │
-│  │  │  │  Inference Engine                            │  │    │   │
-│  │  │  │  → Contradiction Detection                   │  │    │   │
-│  │  │  │  → Absence Reasoning (Blind Spots)           │  │    │   │
-│  │  │  │  → Forward Propagation                       │  │    │   │
-│  │  │  │  → Thread Discovery (Community Detection)    │  │    │   │
-│  │  │  └──────────────────────┬──────────────────────┘  │    │   │
-│  │  │                         │ mature patterns          │    │   │
-│  │  │  ┌──────────────────────▼──────────────────────┐  │    │   │
-│  │  │  │  Internalization → Chronos PERSONALITY.yaml  │  │    │   │
-│  │  │  └─────────────────────────────────────────────┘  │    │   │
-│  │  └───────────────────────────────────────────────────┘    │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+碎片输入 → [摄入 + 标签] → 统一语料库 (Memora 向量 + 可选长文 MSA)
+                                    │
+                          ┌─────────┼──────────┐
+                          ↓         ↓          ↓
+                      [KG 织网]  [蒸馏/总结]  [碰撞/联想]
+                          │         │          │
+                          └─────────┼──────────┘
+                                    ↓
+                             [技能注册表]
+                            (Skill Registry)
+                                    │
+                          ┌─────────┼──────────┐
+                          ↓         ↓          ↓
+                     [问题驱动    [定时       [Nebius
+                      召回+组装]   推送]       微调]
 ```
 
-### Four Memory Subsystems
+### Subsystem Roles
 
-| System | Purpose | Storage | Key Capability |
-|--------|---------|---------|----------------|
-| **Memora** | Snippet-level semantic search | Vector store (JSONL) | RAG with real embeddings, LLM-powered daily digests |
-| **Chronos** | Continual learning | Replay buffer + EWC state | Importance-weighted memory encoding, personality profile generation |
-| **MSA** | Document-level reasoning | Tiered (routing keys in RAM, content on disk) | Sparse attention routing, multi-hop interleave with LLM |
-| **Second Brain** | Cognitive engine: tracking + collision + KG reasoning | Access log + insights JSONL + KG JSONL | Vitality tracking, 7-strategy inspiration collision, Knowledge Graph inference, internalization pipeline |
+| Layer | Module | Role |
+|-------|--------|------|
+| **统一语料库** | **Memora** | Primary vector store (nomic-embed-text, JSONL). All content enters here. |
+| | **MSA** | Optional document-level storage for long text (>500 chars). Sparse routing + multi-hop interleave. |
+| **智能层** | **Second Brain** | KG weaving (relation extraction), distillation/summarization, collision/association. Reads from Memora/MSA, writes to KG + insights + digests. |
+| **技能层** | **Skill Registry** | Versioned, lifecycle-managed skills (draft → active → deprecated). Bridge between memories and actionable capabilities. |
+| **训练层** | **Chronos** | Training data export (distiller), replay buffer, personality profile generation, Nebius fine-tuning client. |
 
-### Second Brain Internal Architecture
+### Second Brain (Intelligence Layer)
 
-Second Brain is more than a memory tracker — it is the cognitive engine of the system. Its internal layers:
+Second Brain is the cognitive engine — it sits **above** the storage layer and provides value extraction:
 
-1. **Tracker** — Memory vitality scoring, dormancy detection, trend analysis
-2. **Collision Engine** — 7-strategy inspiration generation (5 RAG-based + 2 KG-driven), with adaptive strategy weights
-3. **Knowledge Graph** — Structured storage for insights and knowledge relationships (JSONL persistence via NetworkX DiGraph). Nodes represent knowledge units (facts, decisions, preferences, goals, questions); edges represent logical relationships (supports, contradicts, extends, depends_on, alternative_to, addresses)
-4. **Inference Engine** — Operates on the KG to provide reasoning that RAG cannot:
-   - **Contradiction Detection**: scans `contradicts` edges to find decisions with conflicting evidence
-   - **Absence Reasoning**: generates expected dimensions for a decision, identifies which are missing (blind spots)
-   - **Forward Propagation**: traces impact of new facts through `depends_on`/`supports` chains
-   - **Thread Discovery**: community detection to auto-discover related knowledge clusters
-5. **Internalization Manager** — Extracts high-maturity KG patterns and feeds them into Chronos for PERSONALITY.yaml generation (explicit KG knowledge → implicit agent behavior)
+1. **Digest / Distillation** — Periodic LLM-powered summarization of daily memories into long-term digests
+2. **KG Weaving** — LLM-based relation extraction → Knowledge Graph (nodes: fact/decision/preference/goal/question; edges: supports/contradicts/extends/depends_on)
+3. **Collision Engine** — 7-strategy inspiration generation (5 RAG-based + 2 KG-driven), adaptive weights
+4. **Inference Engine** — Contradiction detection, absence reasoning, forward propagation, thread discovery
+5. **Tracker** — Memory vitality scoring, dormancy detection, trend analysis
+6. **Internalization** — High-maturity KG patterns → Chronos PERSONALITY.yaml
 
-**Data flow within Second Brain:**
+### Chronos (Training Pipeline)
 
-```
-New memory ──→ Relation Extractor (LLM) ──→ KG nodes/edges (JSONL)
-                                                    │
-Collision Engine ←── reads KG for strategies 6 & 7 ─┘
-       │
-       ├── writes insights (JSONL)
-       └── user rates insight → strategy weight update
-                                                    │
-Inference Engine ←── reads KG ──────────────────────┘
-       │
-       └── contradictions / blind spots / propagation alerts
-                                                    │
-Internalization Manager ←── reads mature KG nodes ──┘
-       │
-       └── patterns → Chronos consolidator → PERSONALITY.yaml
-```
+Chronos has been refactored from simulated EWC/LoRA to a focused training pipeline:
+
+1. **Encoder** — Structured memory encoding (facts, preferences, emotions, causal links)
+2. **Replay Buffer** — Importance-weighted training candidate storage
+3. **Distiller** — JSONL dataset generation from digests + buffer (chronos_lora_row_v1 format)
+4. **Consolidator** — Periodic personality profile generation (PERSONALITY.yaml)
+5. **Nebius Client** — Skeleton for cloud fine-tuning (upload → train → poll)
+
+### Ingest Tags
+
+Content is tagged at ingestion time to track cognitive intent:
+
+| Tag | Meaning |
+|-----|---------|
+| `thought` | User's own thinking / analysis |
+| `share` | Forwarded / curated content |
+| `reference` | Factual reference material |
+| `to_verify` | Unconfirmed, needs checking |
 
 ### Service Layer
 

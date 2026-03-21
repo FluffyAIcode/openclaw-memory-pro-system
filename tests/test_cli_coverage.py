@@ -117,7 +117,7 @@ class TestChronosCLI:
         mock_bridge = MagicMock()
         mock_bridge.status.return_value = {
             "buffer_size": 10, "learn_count": 5,
-            "ewc_mode": "simulated", "lora_adapters": 2
+            "nebius": {"configured": False}
         }
         cmod.bridge = mock_bridge
         try:

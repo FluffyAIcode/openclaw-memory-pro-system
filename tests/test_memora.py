@@ -306,20 +306,21 @@ class TestVectorStore:
 
 
 # ═══════════════════════════════════════════════════════════
-# memora/digest.py
+# second_brain/digest.py (moved from memora/)
 # ═══════════════════════════════════════════════════════════
 
 class TestDigest:
 
     def _make_cfg(self, tmp_path):
-        from memora.config import MemoraConfig
-        cfg = MemoraConfig(base_dir=tmp_path)
+        from second_brain.config import SecondBrainConfig
+        cfg = SecondBrainConfig(base_dir=tmp_path)
         cfg.ensure_dirs()
+        cfg.daily_dir.mkdir(parents=True, exist_ok=True)
         return cfg
 
     def test_digest_empty_daily(self, tmp_path):
         cfg = self._make_cfg(tmp_path)
-        import memora.digest as dmod
+        import second_brain.digest as dmod
         orig = dmod.config
         dmod.config = cfg
         try:
@@ -332,7 +333,7 @@ class TestDigest:
         cfg = self._make_cfg(tmp_path)
         today = datetime.now().strftime("%Y-%m-%d")
         (cfg.daily_dir / f"{today}.md").write_text("### test entry\ncontent here\n")
-        import memora.digest as dmod
+        import second_brain.digest as dmod
         orig = dmod.config
         dmod.config = cfg
         try:
@@ -352,7 +353,7 @@ class TestDigest:
         cfg = self._make_cfg(tmp_path)
         today = datetime.now().strftime("%Y-%m-%d")
         (cfg.daily_dir / f"{today}.md").write_text("entry\n")
-        import memora.digest as dmod
+        import second_brain.digest as dmod
         orig = dmod.config
         dmod.config = cfg
         try:
@@ -368,7 +369,7 @@ class TestDigest:
     def test_digest_skips_bad_filenames(self, tmp_path):
         cfg = self._make_cfg(tmp_path)
         (cfg.daily_dir / "bad-name.md").write_text("stuff\n")
-        import memora.digest as dmod
+        import second_brain.digest as dmod
         orig = dmod.config
         dmod.config = cfg
         try:
@@ -378,80 +379,17 @@ class TestDigest:
         assert result is True
 
     def test_digest_nonexistent_daily_dir(self, tmp_path):
-        import memora.digest as dmod
+        import second_brain.digest as dmod
         orig = dmod.config
         mock_cfg = MagicMock()
         mock_cfg.daily_dir = tmp_path / "nonexistent_daily"
+        mock_cfg.digest_interval_days = 7
         dmod.config = mock_cfg
         try:
             result = dmod.digest_memories(days=7)
         finally:
             dmod.config = orig
         assert result is False
-
-
-# ═══════════════════════════════════════════════════════════
-# memora/distiller.py
-# ═══════════════════════════════════════════════════════════
-
-class TestDistiller:
-
-    def _get_dmod(self):
-        import memora.distiller  # ensure submodule is loaded
-        return sys.modules["memora.distiller"]
-
-    def test_prepare_dataset(self, tmp_path):
-        from memora.config import MemoraConfig
-        cfg = MemoraConfig(base_dir=tmp_path)
-        cfg.ensure_dirs()
-        (cfg.long_term_dir / "digest_test.md").write_text("# Digest\nSome content\n")
-
-        dmod = self._get_dmod()
-        orig = dmod.config
-        dmod.config = cfg
-        try:
-            from memora.distiller import LoRADistiller
-            d = LoRADistiller()
-            d.output_dir = tmp_path / "lora"
-            path = d.prepare_dataset()
-        finally:
-            dmod.config = orig
-        assert path.exists()
-        lines = path.read_text().splitlines()
-        assert len(lines) == 1
-        sample = json.loads(lines[0])
-        assert "instruction" in sample
-
-    def test_prepare_dataset_no_dir(self, tmp_path):
-        dmod = self._get_dmod()
-        orig = dmod.config
-        mock_cfg = MagicMock()
-        mock_cfg.long_term_dir = tmp_path / "nonexist"
-        dmod.config = mock_cfg
-        try:
-            from memora.distiller import LoRADistiller
-            d = LoRADistiller()
-            d.output_dir = tmp_path / "lora2"
-            path = d.prepare_dataset()
-        finally:
-            dmod.config = orig
-        assert path is not None
-
-    def test_start_training(self, tmp_path):
-        from memora.config import MemoraConfig
-        cfg = MemoraConfig(base_dir=tmp_path)
-        cfg.ensure_dirs()
-        dmod = self._get_dmod()
-        orig = dmod.config
-        dmod.config = cfg
-        try:
-            from memora.distiller import LoRADistiller
-            d = LoRADistiller()
-            d.output_dir = tmp_path / "lora3"
-            result = d.start_training(epochs=1)
-        finally:
-            dmod.config = orig
-        assert result is True
 
 
 # ═══════════════════════════════════════════════════════════

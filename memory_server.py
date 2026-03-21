@@ -529,7 +529,7 @@ class Scheduler:
 
     def _task_digest(self):
         try:
-            from memora.digest import digest_memories
+            from second_brain.digest import digest_memories
             digest_memories(days=7)
         except Exception as e:
             logger.error("Digest failed: %s", e)
@@ -756,6 +756,7 @@ def _execute_endpoint(path: str, body: dict) -> dict:
             content=body.get("content", ""),
             source=body.get("source", "openclaw"),
             importance=body.get("importance", 0.7),
+            tag=body.get("tag"),
             doc_id=body.get("doc_id"),
             title=body.get("title"),
             force_systems=body.get("force_systems"),
@@ -801,7 +802,7 @@ def _execute_endpoint(path: str, body: dict) -> dict:
         return entry
 
     elif path == "/digest":
-        from memora.digest import digest_memories
+        from second_brain.digest import digest_memories
         days = body.get("days", 7)
         ok = digest_memories(days=days)
         return {"success": ok, "days": days}
@@ -888,6 +889,31 @@ def _execute_endpoint(path: str, body: dict) -> dict:
 
     elif path == "/bookmark":
         return _save_bookmark(body.get("summary", ""), body.get("topics", []))
+
+    elif path == "/skills/add":
+        from skill_registry import registry
+        skill = registry.add(
+            name=body.get("name", ""),
+            content=body.get("content", ""),
+            tags=body.get("tags", []),
+            source_memories=body.get("source_memories", []),
+        )
+        return skill.to_dict()
+
+    elif path == "/skills/promote":
+        from skill_registry import registry
+        skill = registry.promote(body.get("skill_id", ""))
+        return skill.to_dict() if skill else {"error": "Skill not found"}
+
+    elif path == "/skills/deprecate":
+        from skill_registry import registry
+        skill = registry.deprecate(body.get("skill_id", ""))
+        return skill.to_dict() if skill else {"error": "Skill not found"}
+
+    elif path == "/training/export":
+        from chronos.distiller import distiller
+        merged = distiller.prepare_merged()
+        return {"dataset_path": str(merged)}
 
     else:
         raise ValueError(f"Unknown endpoint: {path}")
@@ -1171,6 +1197,20 @@ class MemoryHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/session-context":
             self._respond(200, _get_session_context())
+
+        elif self.path == "/skills":
+            from skill_registry import registry
+            skills = [s.to_dict() for s in registry.list_all()]
+            self._respond(200, {"skills": skills, "count": len(skills)})
+
+        elif self.path == "/skills/active":
+            from skill_registry import registry
+            skills = [s.to_dict() for s in registry.list_active()]
+            self._respond(200, {"skills": skills, "count": len(skills)})
+
+        elif self.path == "/skills/stats":
+            from skill_registry import registry
+            self._respond(200, registry.stats())
 
         else:
             self._respond(404, {"error": f"Unknown endpoint: {self.path}"})

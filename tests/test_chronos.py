@@ -1,5 +1,9 @@
-"""Tests for chronos/* — 100% coverage of config, encoder, replay_buffer,
-ewc, dynamic_lora, consolidator, system, bridge, trainer."""
+"""Tests for chronos/* — config, encoder, replay_buffer,
+consolidator, system, bridge, trainer, distiller, nebius_client.
+
+Note: EWC and DynamicLoRA tests removed — those modules are deprecated
+(still exist on disk but no longer used in the pipeline).
+"""
 
 import json
 import sys
@@ -239,177 +243,7 @@ class TestReplayBuffer:
 
 
 # ═══════════════════════════════════════════════════════════
-# chronos/ewc.py
-# ═══════════════════════════════════════════════════════════
-
-class TestEWCEngine:
-
-    def _make_memory(self, imp=0.8):
-        from chronos.encoder import MemoryEncoder
-        return MemoryEncoder().encode("test", importance=imp)
-
-    def test_simulated_learn(self, tmp_path):
-        from chronos.ewc import EWCEngine
-        ewc = EWCEngine.__new__(EWCEngine)
-        ewc.ewc_lambda = 5000.0
-        ewc._state_dir = tmp_path / "ewc_state"
-        ewc._model = None
-        ewc._fisher = {}
-        ewc._optimal_params = {}
-        ewc._learn_count = 0
-        result = ewc.learn([self._make_memory()])
-        assert result["mode"] == "simulated"
-        assert result["step"] == 1
-
-    def test_consolidate_empty(self):
-        from chronos.ewc import EWCEngine
-        ewc = EWCEngine.__new__(EWCEngine)
-        assert ewc.consolidate([]) == {"consolidated": 0}
-
-    def test_consolidate_with_memories(self, tmp_path):
-        from chronos.ewc import EWCEngine
-        ewc = EWCEngine.__new__(EWCEngine)
-        ewc.ewc_lambda = 5000.0
-        ewc._state_dir = tmp_path / "ewcst"
-        ewc._model = None
-        ewc._fisher = {}
-        ewc._optimal_params = {}
-        ewc._learn_count = 0
-        result = ewc.consolidate([self._make_memory()])
-        assert result["mode"] == "simulated"
-
-    def test_stats(self):
-        from chronos.ewc import EWCEngine
-        ewc = EWCEngine.__new__(EWCEngine)
-        ewc.ewc_lambda = 100.0
-        ewc._model = None
-        ewc._fisher = {"a": 1}
-        ewc._learn_count = 5
-        s = ewc.stats
-        assert s["mode"] == "simulated"
-        assert s["learn_count"] == 5
-        assert s["fisher_params"] == 1
-
-    def test_save_and_load_state(self, tmp_path):
-        from chronos.ewc import EWCEngine
-        ewc = EWCEngine.__new__(EWCEngine)
-        ewc.ewc_lambda = 100.0
-        ewc._state_dir = tmp_path / "state"
-        ewc._model = None
-        ewc._fisher = {"k": 42.0}
-        ewc._optimal_params = {}
-        ewc._learn_count = 3
-        ewc._save_state()
-
-        ewc2 = EWCEngine.__new__(EWCEngine)
-        ewc2._state_dir = tmp_path / "state"
-        ewc2._fisher = {}
-        ewc2._optimal_params = {}
-        ewc2._learn_count = 0
-        ewc2._model = None
-        ewc2.ewc_lambda = 100.0
-        ewc2._load_state()
-        assert ewc2._learn_count == 3
-
-    def test_load_state_missing_file(self, tmp_path):
-        from chronos.ewc import EWCEngine
-        ewc = EWCEngine.__new__(EWCEngine)
-        ewc._state_dir = tmp_path / "nofile"
-        ewc._fisher = {}
-        ewc._learn_count = 0
-        ewc._load_state()
-        assert ewc._learn_count == 0
-
-    def test_set_model_no_torch(self):
-        from chronos.ewc import EWCEngine
-        ewc = EWCEngine.__new__(EWCEngine)
-        ewc._model = None
-        with patch("chronos.ewc.TORCH_AVAILABLE", False):
-            ewc.set_model(MagicMock())
-
-
-# ═══════════════════════════════════════════════════════════
-# chronos/dynamic_lora.py
-# ═══════════════════════════════════════════════════════════
-
-class TestDynamicLoRA:
-
-    def _make_memory(self, imp=0.8):
-        from chronos.encoder import MemoryEncoder
-        return MemoryEncoder().encode("test", importance=imp)
-
-    def test_allocate(self):
-        from chronos.dynamic_lora import DynamicLoRA
-        lora = DynamicLoRA.__new__(DynamicLoRA)
-        lora._max = 5
-        lora._rank = 8
-        lora._adapters = {}
-        lora._total_allocated = 0
-        aid = lora.allocate(self._make_memory(imp=0.9))
-        assert aid != ""
-        assert lora._total_allocated == 1
-
-    def test_allocate_rejects_low_importance(self):
-        from chronos.dynamic_lora import DynamicLoRA
-        lora = DynamicLoRA.__new__(DynamicLoRA)
-        lora._max = 1
-        lora._rank = 8
-        lora._adapters = {"existing": 0.95}
-        lora._total_allocated = 1
-        aid = lora.allocate(self._make_memory(imp=0.1))
-        assert aid == ""
-
-    def test_allocate_evicts_lowest(self):
-        from chronos.dynamic_lora import DynamicLoRA
-        lora = DynamicLoRA.__new__(DynamicLoRA)
-        lora._max = 1
-        lora._rank = 8
-        lora._adapters = {"old": 0.3}
-        lora._total_allocated = 1
-        aid = lora.allocate(self._make_memory(imp=0.9))
-        assert aid != ""
-        assert len(lora._adapters) == 1
-
-    def test_update(self):
-        from chronos.dynamic_lora import DynamicLoRA
-        lora = DynamicLoRA.__new__(DynamicLoRA)
-        lora._max = 10
-        lora._rank = 8
-        lora._adapters = {}
-        lora._total_allocated = 0
-        lora.update([self._make_memory(), self._make_memory()])
-
-    def test_merge(self):
-        from chronos.dynamic_lora import DynamicLoRA
-        lora = DynamicLoRA.__new__(DynamicLoRA)
-        lora._adapters = {"a": 0.5, "b": 0.6}
-        lora.merge()
-        assert len(lora._adapters) == 0
-
-    def test_stats_empty(self):
-        from chronos.dynamic_lora import DynamicLoRA
-        lora = DynamicLoRA.__new__(DynamicLoRA)
-        lora._max = 10
-        lora._rank = 8
-        lora._adapters = {}
-        lora._total_allocated = 0
-        s = lora.stats
-        assert s["avg_importance"] == 0.0
-
-    def test_stats_with_adapters(self):
-        from chronos.dynamic_lora import DynamicLoRA
-        lora = DynamicLoRA.__new__(DynamicLoRA)
-        lora._max = 10
-        lora._rank = 8
-        lora._adapters = {"a": 0.5, "b": 0.9}
-        lora._total_allocated = 2
-        s = lora.stats
-        assert s["active_adapters"] == 2
-        assert 0.5 < s["avg_importance"] < 0.9
-
-
-# ═══════════════════════════════════════════════════════════
-# chronos/consolidator.py
+# chronos/consolidator.py (refactored — no EWC/LoRA)
 # ═══════════════════════════════════════════════════════════
 
 class TestConsolidator:
@@ -442,7 +276,6 @@ class TestConsolidator:
         assert result.get("skipped") is True
 
     def _get_cmod(self):
-        """Access the actual consolidator module (not the singleton)."""
         return sys.modules["chronos.consolidator"]
 
     def test_consolidate_no_important(self, tmp_path):
@@ -473,22 +306,16 @@ class TestConsolidator:
         memories = [self._make_memory(imp=0.95)]
 
         cmod = self._get_cmod()
-        orig_rb, orig_ewc, orig_lora = cmod.replay_buffer, cmod.ewc_engine, cmod.dynamic_lora
+        orig_rb = cmod.replay_buffer
         mock_rb = MagicMock()
         mock_rb.get_important_memories.return_value = memories
-        mock_ewc = MagicMock()
-        mock_ewc.consolidate.return_value = {"ewc_loss": 0}
         cmod.replay_buffer = mock_rb
-        cmod.ewc_engine = mock_ewc
-        cmod.dynamic_lora = MagicMock()
         try:
             with patch("llm_client.is_available", return_value=True), \
                  patch("llm_client.generate", return_value="core_beliefs:\n  - test"):
                 result = mc.consolidate(force=True)
         finally:
             cmod.replay_buffer = orig_rb
-            cmod.ewc_engine = orig_ewc
-            cmod.dynamic_lora = orig_lora
         assert result["consolidated"] == 1
         assert result["personality_profile_updated"] is True
 
@@ -537,19 +364,13 @@ class TestConsolidator:
         mc._last = datetime.now()
         mc._count = 3
         cmod = self._get_cmod()
-        orig_rb, orig_ewc, orig_lora = cmod.replay_buffer, cmod.ewc_engine, cmod.dynamic_lora
+        orig_rb = cmod.replay_buffer
         cmod.replay_buffer = MagicMock()
         cmod.replay_buffer.stats.return_value = {"total": 5}
-        cmod.ewc_engine = MagicMock()
-        cmod.ewc_engine.stats = {"mode": "simulated"}
-        cmod.dynamic_lora = MagicMock()
-        cmod.dynamic_lora.stats = {"active_adapters": 2}
         try:
             rpt = mc.report()
         finally:
             cmod.replay_buffer = orig_rb
-            cmod.ewc_engine = orig_ewc
-            cmod.dynamic_lora = orig_lora
         assert rpt["consolidation_count"] == 3
 
     def test_save_and_load_last(self, tmp_path):
@@ -585,11 +406,11 @@ class TestConsolidator:
         mc._state_file = None
         mc._last = None
         mc._count = 0
-        mc._save_last()  # should be a no-op
+        mc._save_last()
 
 
 # ═══════════════════════════════════════════════════════════
-# chronos/system.py
+# chronos/system.py (refactored — no EWC/LoRA)
 # ═══════════════════════════════════════════════════════════
 
 class TestChronosSystem:
@@ -608,68 +429,62 @@ class TestChronosSystem:
         cs = smod.ChronosSystem.__new__(smod.ChronosSystem)
         cs._initialized = False
         cs._learn_count = 0
-        orig = (smod.encoder, smod.replay_buffer, smod.ewc_engine,
-                smod.dynamic_lora, smod.consolidator)
+        orig = (smod.encoder, smod.replay_buffer, smod.consolidator)
         try:
             mock_enc = MagicMock()
             mock_enc.encode.return_value = MagicMock(importance=0.8)
             smod.encoder = mock_enc
             mock_rb = MagicMock()
-            mock_rb.sample.return_value = []
             smod.replay_buffer = mock_rb
-            smod.ewc_engine = MagicMock()
-            smod.dynamic_lora = MagicMock()
             mock_cons = MagicMock()
             mock_cons.should_consolidate.return_value = False
             smod.consolidator = mock_cons
             cs.learn("text")
             assert cs._learn_count == 1
         finally:
-            smod.encoder, smod.replay_buffer, smod.ewc_engine, \
-                smod.dynamic_lora, smod.consolidator = orig
+            smod.encoder, smod.replay_buffer, smod.consolidator = orig
 
     def test_learn_triggers_consolidation(self):
         import chronos.system as smod
         cs = smod.ChronosSystem.__new__(smod.ChronosSystem)
         cs._initialized = True
         cs._learn_count = 0
-        orig = (smod.encoder, smod.replay_buffer, smod.ewc_engine,
-                smod.dynamic_lora, smod.consolidator)
+        orig = (smod.encoder, smod.replay_buffer, smod.consolidator)
         try:
             mock_enc = MagicMock()
             mock_enc.encode.return_value = MagicMock(importance=0.9)
             smod.encoder = mock_enc
-            mock_rb = MagicMock()
-            mock_rb.sample.return_value = []
-            smod.replay_buffer = mock_rb
-            smod.ewc_engine = MagicMock()
-            smod.dynamic_lora = MagicMock()
+            smod.replay_buffer = MagicMock()
             mock_cons = MagicMock()
             mock_cons.should_consolidate.return_value = True
             smod.consolidator = mock_cons
             cs.learn("important")
             mock_cons.consolidate.assert_called_once()
         finally:
-            smod.encoder, smod.replay_buffer, smod.ewc_engine, \
-                smod.dynamic_lora, smod.consolidator = orig
+            smod.encoder, smod.replay_buffer, smod.consolidator = orig
 
     def test_status(self):
+        import importlib
         import chronos.system as smod
         cs = smod.ChronosSystem.__new__(smod.ChronosSystem)
         cs._initialized = True
         cs._learn_count = 5
-        orig = (smod.replay_buffer, smod.ewc_engine, smod.dynamic_lora)
+        orig_rb = smod.replay_buffer
         try:
             mock_rb = MagicMock()
             mock_rb.size.return_value = 10
             smod.replay_buffer = mock_rb
-            smod.ewc_engine = MagicMock()
-            smod.ewc_engine.stats = {"mode": "simulated"}
-            smod.dynamic_lora = MagicMock()
-            smod.dynamic_lora.stats = {"active_adapters": 2}
-            s = cs.status()
+            nbmod = importlib.import_module("chronos.nebius_client")
+            orig_nb = nbmod.nebius_client
+            mock_nb = MagicMock()
+            mock_nb.status.return_value = {"configured": False}
+            nbmod.nebius_client = mock_nb
+            try:
+                s = cs.status()
+            finally:
+                nbmod.nebius_client = orig_nb
         finally:
-            smod.replay_buffer, smod.ewc_engine, smod.dynamic_lora = orig
+            smod.replay_buffer = orig_rb
         assert s["learn_count"] == 5
         assert s["buffer_size"] == 10
 
@@ -694,6 +509,21 @@ class TestChronosSystem:
             assert cs.report()["rpt"] is True
         finally:
             smod.consolidator = orig
+
+    def test_export_training_data(self):
+        import importlib
+        import chronos.system as smod
+        cs = smod.ChronosSystem.__new__(smod.ChronosSystem)
+        dmod = importlib.import_module("chronos.distiller")
+        orig = dmod.distiller
+        mock_d = MagicMock()
+        mock_d.prepare_merged.return_value = Path("/tmp/merged.jsonl")
+        dmod.distiller = mock_d
+        try:
+            result = cs.export_training_data()
+            assert "dataset_path" in result
+        finally:
+            dmod.distiller = orig
 
 
 # ═══════════════════════════════════════════════════════════
@@ -764,6 +594,17 @@ class TestChronosBridge:
         finally:
             bmod.chronos = orig
 
+    def test_export_training_data(self):
+        import chronos.bridge as bmod
+        orig = bmod.chronos
+        bmod.chronos = MagicMock()
+        bmod.chronos.export_training_data.return_value = {"dataset_path": "/tmp/x.jsonl"}
+        try:
+            from chronos.bridge import ChronosBridge
+            assert "dataset_path" in ChronosBridge().export_training_data()
+        finally:
+            bmod.chronos = orig
+
 
 # ═══════════════════════════════════════════════════════════
 # chronos/trainer.py
@@ -813,3 +654,84 @@ class TestChronosTrainer:
             assert tmod.chronos.learn.call_count == 2
         finally:
             tmod.chronos, tmod.consolidator = orig_c, orig_cons
+
+
+# ═══════════════════════════════════════════════════════════
+# chronos/distiller.py (new)
+# ═══════════════════════════════════════════════════════════
+
+class TestTrainingDistiller:
+
+    def test_prepare_from_digests_empty(self, tmp_path):
+        from chronos.distiller import TrainingDistiller
+        d = TrainingDistiller(output_dir=tmp_path / "train")
+        path = d.prepare_from_digests(digest_dir=tmp_path / "nonexist")
+        assert path.parent.exists()
+
+    def test_prepare_from_digests_with_files(self, tmp_path):
+        from chronos.distiller import TrainingDistiller
+        digest_dir = tmp_path / "digests"
+        digest_dir.mkdir()
+        (digest_dir / "digest_2026-03-21.md").write_text("# Test digest\nContent here.")
+        d = TrainingDistiller(output_dir=tmp_path / "train")
+        path = d.prepare_from_digests(digest_dir=digest_dir)
+        assert path.exists()
+        lines = path.read_text().strip().splitlines()
+        assert len(lines) == 1
+        row = json.loads(lines[0])
+        assert row["source"] == "second_brain_digest"
+
+    def test_prepare_from_buffer(self, tmp_path):
+        from chronos.distiller import TrainingDistiller
+        buf = tmp_path / "buf.jsonl"
+        mem = {
+            "facts": ["fact1"], "preferences": [], "emotions": [],
+            "causal_links": [], "importance": 0.8,
+            "timestamp": "2026-03-21T12:00:00", "raw_text": "test content"
+        }
+        buf.write_text(json.dumps(mem) + "\n")
+        d = TrainingDistiller(output_dir=tmp_path / "train")
+        path = d.prepare_from_buffer(buffer_path=buf)
+        assert path.exists()
+        row = json.loads(path.read_text().strip())
+        assert row["source"] == "chronos_replay"
+
+    def test_encoded_memory_to_row(self):
+        from chronos.distiller import TrainingDistiller
+        m = {"facts": ["f"], "preferences": ["p"], "emotions": [],
+             "causal_links": [], "importance": 0.7,
+             "timestamp": "2026-01-01T00:00:00", "raw_text": "hello"}
+        row = TrainingDistiller._encoded_memory_to_row(m)
+        assert row["source"] == "chronos_replay"
+        assert "[facts]" in row["input"]
+
+
+# ═══════════════════════════════════════════════════════════
+# chronos/nebius_client.py (new)
+# ═══════════════════════════════════════════════════════════
+
+class TestNebiusClient:
+
+    def test_not_configured_by_default(self):
+        from chronos.nebius_client import NebiusClient
+        nc = NebiusClient()
+        assert nc.is_configured is False
+
+    def test_status(self):
+        from chronos.nebius_client import NebiusClient
+        nc = NebiusClient()
+        s = nc.status()
+        assert "configured" in s
+        assert s["configured"] is False
+
+    def test_upload_raises_not_configured(self, tmp_path):
+        from chronos.nebius_client import NebiusClient
+        nc = NebiusClient()
+        with pytest.raises(RuntimeError, match="not set"):
+            nc.upload_dataset(tmp_path / "data.jsonl")
+
+    def test_create_job_raises_not_configured(self):
+        from chronos.nebius_client import NebiusClient
+        nc = NebiusClient()
+        with pytest.raises(RuntimeError, match="not set"):
+            nc.create_job("ds-123")

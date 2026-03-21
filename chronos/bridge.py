@@ -1,8 +1,8 @@
 """
-Chronos <-> OpenClaw bridge.
+Chronos <-> OpenClaw bridge (refactored).
 
-Provides "double-write": memories go through the Chronos CL pipeline
-AND optionally appended to OpenClaw's memory/ daily files.
+Provides memory ingestion into the training pipeline buffer,
+consolidation (personality profile), and training data export.
 """
 
 import logging
@@ -24,11 +24,7 @@ class ChronosBridge:
 
     def learn_and_save(self, content: str, source: str = "openclaw",
                        importance: float = 0.75, write_daily: bool = True):
-        """
-        Double-write:
-        1. Chronos CL pipeline (encode → buffer → EWC → LoRA)
-        2. OpenClaw memory/ daily file (skipped when caller handles it)
-        """
+        """Encode content into buffer for future training."""
         encoded = chronos.learn(content, importance=importance)
 
         if write_daily:
@@ -43,6 +39,9 @@ class ChronosBridge:
 
     def consolidate(self):
         return chronos.consolidate(force=True)
+
+    def export_training_data(self):
+        return chronos.export_training_data()
 
     def status(self) -> dict:
         return chronos.status()

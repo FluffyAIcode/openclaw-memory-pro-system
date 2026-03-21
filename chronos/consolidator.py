@@ -1,10 +1,9 @@
 """
-Periodic memory consolidation — strengthens important memories
-by replaying them through the EWC engine and updating LoRA adapters.
+Periodic memory consolidation — generates PERSONALITY.yaml from
+high-importance memories and KG patterns.
 
-Also generates PERSONALITY.yaml from high-importance memories using
-xAI Grok API, which gets injected into the agent's system prompt
-at session startup.
+Refactored: EWC/LoRA simulation removed. Consolidation now focuses on
+personality profile generation and triggering training data export.
 """
 
 import json
@@ -13,9 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from .ewc import ewc_engine
 from .replay_buffer import replay_buffer
-from .dynamic_lora import dynamic_lora
 from .config import load_config
 
 logger = logging.getLogger(__name__)
@@ -74,8 +71,6 @@ class MemoryConsolidator:
             return {"consolidated": 0}
 
         logger.info("开始记忆巩固 — %d 条", len(important))
-        result = ewc_engine.consolidate(important)
-        dynamic_lora.update(important)
 
         kg_patterns = None
         try:
@@ -95,20 +90,12 @@ class MemoryConsolidator:
                      "已生成" if profile_generated else "跳过")
         return {
             "consolidated": len(important),
-            "ewc_result": result,
             "consolidation_number": self._count,
             "personality_profile_updated": profile_generated,
         }
 
     def _generate_personality_profile(self, important_memories,
                                        kg_patterns=None) -> bool:
-        """Use LLM to generate PERSONALITY.yaml from high-importance memories
-        and stable KG patterns (if available).
-
-        Args:
-            important_memories: Chronos replay buffer entries
-            kg_patterns: Optional list of dicts from InternalizationManager
-        """
         try:
             import llm_client
             if not llm_client.is_available():
@@ -177,11 +164,7 @@ class MemoryConsolidator:
             "last_consolidation": self._last.isoformat() if self._last else None,
             "consolidation_count": self._count,
             "buffer": replay_buffer.stats(),
-            "ewc": ewc_engine.stats,
-            "lora": dynamic_lora.stats,
         }
-
-    # ---- persistence ----
 
     def _load_last(self) -> Optional[datetime]:
         if not self._state_file or not self._state_file.exists():

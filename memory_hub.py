@@ -1,14 +1,18 @@
 """
-Memory Hub — Unified interface for OpenClaw's four memory systems.
+Memory Hub — Unified interface for OpenClaw's memory architecture.
 
-Routes ingestion and queries to the appropriate system(s) based on content
-characteristics and query intent. Provides merged results across all systems.
+Refactored architecture:
+  - Memora   (primary storage: vector RAG, snippet-level search)
+  - MSA      (optional long-document storage + multi-hop reasoning)
+  - Chronos  (training buffer — not on default ingest path)
+  - Second Brain  (intelligence layer: KG, digest, collision — not a storage system)
 
-Systems:
-  - memory/  (file-based daily logs)
-  - Memora   (vector RAG, snippet-level search)
-  - Chronos  (continual learning, parameter-level memory)
-  - MSA      (document-level sparse routing, multi-hop reasoning)
+Ingest tags (intent):
+  - thought:    user's own thinking / analysis
+  - share:      forwarded / curated content
+  - reference:  factual reference material
+  - to_verify:  unconfirmed / needs checking
+  - (none):     untagged legacy content
 """
 
 import logging
@@ -20,22 +24,22 @@ logger = logging.getLogger(__name__)
 
 _WORKSPACE = Path(__file__).parent
 
+VALID_TAGS = {"thought", "share", "reference", "to_verify"}
+
 
 class MemoryHub:
     """
-    Unified memory interface that automatically routes to the right system:
+    Unified memory interface.
 
-    Ingestion routing:
-      - Short text (<100 words): Memora only (snippet-level)
-      - Medium text (100-500 words) + high importance: Memora + Chronos
-      - Long text (>100 words): Memora + MSA (document-level)
-      - Any text with importance >= 0.85: also Chronos (parameter internalization)
+    Ingestion routing (simplified):
+      - All text → Memora (primary vector store, dedup-aware)
+      - Long text (>500 chars) → also MSA (document-level)
+      - Chronos buffer → only on explicit force_systems=["chronos"]
+      - Always writes daily file
 
     Query routing:
-      - Simple query: Memora snippet search
-      - Document query: MSA sparse routing (returns full document context)
-      - Complex query: MSA interleave (multi-hop reasoning)
-      - Merged query: Memora + MSA results combined
+      - recall → merged Memora + MSA
+      - deep-recall → MSA multi-hop + Memora context
     """
 
     def __init__(self):
@@ -66,44 +70,49 @@ class MemoryHub:
 
     def remember(self, content: str, source: str = "openclaw",
                  importance: float = 0.7,
+                 tag: Optional[str] = None,
                  doc_id: Optional[str] = None,
                  title: Optional[str] = None,
                  force_systems: Optional[List[str]] = None) -> Dict:
         """
-        Smart ingestion: routes content to the appropriate memory system(s).
+        Smart ingestion with intent tagging.
 
         Args:
             content: The text to remember
-            source: Origin tag
+            source: Origin channel (e.g. "telegram", "cursor", "auto_ingest")
             importance: 0.0-1.0 importance score
+            tag: Intent tag — thought | share | reference | to_verify
             doc_id: Optional document ID for MSA
             title: Optional title for MSA
             force_systems: Override auto-routing, e.g. ["memora", "msa", "chronos"]
-
-        Returns:
-            Dict with results from each system that was used
         """
+        if tag and tag not in VALID_TAGS:
+            logger.warning("Unknown tag '%s', ignoring", tag)
+            tag = None
+
         word_count = max(len(content.split()), len(content) // 2)
-        results = {"word_count": word_count, "systems_used": []}
+        results = {"word_count": word_count, "systems_used": [], "tag": tag}
 
         if force_systems:
             systems = set(force_systems)
         else:
             systems = self._route_ingestion(word_count, importance)
 
+        metadata = {
+            "source": source,
+            "importance": importance,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if tag:
+            metadata["tag"] = tag
+
         if "memora" in systems:
             try:
-                # Use Memora bridge but disable its own MSA/Chronos forwarding
-                # since we handle cross-system routing here
                 from memora.collector import collector
                 from memora.vectorstore import vector_store
 
                 entry = collector.collect(content, source=source, importance=importance)
-                vector_store.add(content, metadata={
-                    "source": source,
-                    "importance": importance,
-                    "timestamp": entry["timestamp"],
-                })
+                vector_store.add(content, metadata=metadata)
                 results["memora"] = entry
                 results["systems_used"].append("memora")
             except Exception as e:
@@ -111,12 +120,14 @@ class MemoryHub:
 
         if "msa" in systems:
             try:
-                metadata = {"source": source}
+                msa_meta = {"source": source}
                 if title:
-                    metadata["title"] = title
+                    msa_meta["title"] = title
+                if tag:
+                    msa_meta["tag"] = tag
                 msa_result = self.msa.ingest_and_save(
                     content, source=source, doc_id=doc_id,
-                    metadata=metadata,
+                    metadata=msa_meta,
                     cross_index=("memora" not in systems),
                     write_daily=False)
                 results["msa"] = msa_result
@@ -134,19 +145,15 @@ class MemoryHub:
             except Exception as e:
                 logger.warning("Chronos ingestion failed: %s", e)
 
-        # Always write to daily file
-        self._write_daily(content, source, results["systems_used"])
+        self._write_daily(content, source, results["systems_used"], tag)
         results["systems_used"].append("daily_file")
 
-        logger.info("Memory Hub: remembered %d words via %s",
-                     word_count, ", ".join(results["systems_used"]))
+        logger.info("Memory Hub: remembered %d words via %s (tag=%s)",
+                     word_count, ", ".join(results["systems_used"]), tag)
         return results
 
     def recall(self, query: str, top_k: int = 8) -> Dict:
-        """
-        Merged search across Memora (snippet) + MSA (document-level).
-        Results are combined and sorted by score.
-        """
+        """Merged search across Memora (snippet) + MSA (document-level)."""
         results = {"query": query, "memora": [], "msa": [], "merged": []}
 
         try:
@@ -175,10 +182,7 @@ class MemoryHub:
         return results
 
     def deep_recall(self, query: str, max_rounds: int = 3) -> Dict:
-        """
-        Multi-hop reasoning using MSA Memory Interleave,
-        enriched with Memora snippet context.
-        """
+        """Multi-hop reasoning using MSA Memory Interleave + Memora context."""
         results = {"query": query}
 
         try:
@@ -197,7 +201,7 @@ class MemoryHub:
         return results
 
     def status(self) -> Dict:
-        """Combined status from all memory systems."""
+        """Combined status from all systems."""
         st = {"systems": {}}
 
         try:
@@ -219,25 +223,23 @@ class MemoryHub:
         return st
 
     def _route_ingestion(self, word_count: int, importance: float) -> set:
+        """Simplified routing: Memora always; MSA for long text."""
         systems = {"memora"}
-
         if word_count >= 100:
             systems.add("msa")
-
-        if importance >= 0.85:
-            systems.add("chronos")
-
         return systems
 
-    def _write_daily(self, content: str, source: str, systems: List[str]):
+    def _write_daily(self, content: str, source: str,
+                     systems: List[str], tag: Optional[str] = None):
         memory_dir = _WORKSPACE / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)
         today = memory_dir / f"{datetime.now().strftime('%Y-%m-%d')}.md"
         tags = "+".join(systems) if systems else "direct"
+        tag_label = f" #{tag}" if tag else ""
         preview = content[:300] if len(content) > 300 else content
         with open(today, "a", encoding="utf-8") as f:
             f.write(f"\n### {datetime.now().strftime('%H:%M:%S')} "
-                    f"[Hub/{tags}]\n{preview}\n")
+                    f"[Hub/{tags}]{tag_label}\n{preview}\n")
 
 
 hub = MemoryHub()
