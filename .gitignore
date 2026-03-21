@@ -24,6 +24,7 @@ memory/server-stdout.log
 memory/server-stderr.log
 memory/bookmarks.jsonl
 memory/ingestion_state.json
+memory/ingestion_hashes.json
 memory/scheduler_state.json
 *.log
 

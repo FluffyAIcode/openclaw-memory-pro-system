@@ -20,11 +20,17 @@ class DeterministicEmbedder:
     """Test embedder that produces stable, distinct, normalized vectors."""
     dimension = 768
 
-    def embed(self, text: str):
+    def embed(self, text: str, prefix: str = "search_document"):
         np.random.seed(hash(text) % 2**31)
         vec = np.random.randn(self.dimension).astype(np.float32)
         vec /= np.linalg.norm(vec)
         return vec.tolist()
+
+    def embed_document(self, text: str):
+        return self.embed(text, prefix="search_document")
+
+    def embed_query(self, text: str):
+        return self.embed(text, prefix="search_query")
 
     def embed_batch(self, texts):
         return np.array([np.array(self.embed(t), dtype=np.float32) for t in texts])

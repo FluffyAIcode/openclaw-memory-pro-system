@@ -43,11 +43,24 @@ class VectorStore:
         logger.debug("加载了 %d 条向量条目", len(self._entries))
         return self._entries
 
-    def add(self, content: str, metadata: dict = None):
+    def contains(self, content: str) -> bool:
+        """Check if content (by first 80 chars) already exists in the store."""
+        entries = self._load()
+        prefix = content.strip()[:80]
+        for e in entries:
+            if e.get("content", "").strip()[:80] == prefix:
+                return True
+        return False
+
+    def add(self, content: str, metadata: dict = None, dedup: bool = True):
         self._ensure_dir()
         entries = self._load()
 
-        vector = embedder.embed(content)
+        if dedup and self.contains(content):
+            logger.debug("Skipped duplicate: %s", content[:60])
+            return
+
+        vector = embedder.embed_document(content)
         entry = {
             "content": content,
             "vector": vector,
@@ -66,7 +79,7 @@ class VectorStore:
         if not entries:
             return []
 
-        query_vec = embedder.embed(query)
+        query_vec = embedder.embed_query(query)
 
         scored = []
         for e in entries:

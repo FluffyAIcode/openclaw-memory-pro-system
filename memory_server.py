@@ -214,14 +214,25 @@ _telegram = TelegramPusher()
 # ── Auto-Ingestor ─────────────────────────────────────────────
 
 class AutoIngestor:
-    """Background thread that watches daily .md files and auto-ingests new content."""
+    """Background thread that watches daily .md files and auto-ingests new content.
+
+    Dedup strategy:
+      - Track processed line count per file (skip already-processed lines)
+      - Track content hashes of ingested paragraphs (skip exact duplicates)
+      - VectorStore.add() also deduplicates by prefix match
+      - Ingest directly into subsystems instead of hub.remember()
+        to avoid writing back to the daily file (which creates a feedback loop)
+    """
 
     _STATE_FILE = "memory/ingestion_state.json"
+    _HASHES_FILE = "memory/ingestion_hashes.json"
     _INTERVAL = 1800  # 30 minutes
 
     def __init__(self):
         self._state_path = _WORKSPACE / self._STATE_FILE
+        self._hashes_path = _WORKSPACE / self._HASHES_FILE
         self._state: Dict[str, int] = {}
+        self._seen_hashes: set = set()
         self._load_state()
 
     def _load_state(self):
@@ -230,6 +241,11 @@ class AutoIngestor:
                 self._state = json.loads(self._state_path.read_text(encoding="utf-8"))
         except Exception:
             self._state = {}
+        try:
+            if self._hashes_path.exists():
+                self._seen_hashes = set(json.loads(self._hashes_path.read_text(encoding="utf-8")))
+        except Exception:
+            self._seen_hashes = set()
 
     def _save_state(self):
         try:
@@ -237,15 +253,22 @@ class AutoIngestor:
             self._state_path.write_text(
                 json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            self._hashes_path.write_text(
+                json.dumps(list(self._seen_hashes), ensure_ascii=False), encoding="utf-8"
+            )
         except Exception as e:
             logger.warning("AutoIngestor: failed to save state: %s", e)
+
+    @staticmethod
+    def _content_hash(text: str) -> str:
+        import hashlib
+        return hashlib.md5(text.strip().encode("utf-8")).hexdigest()[:16]
 
     def scan_and_ingest(self):
         memory_dir = _WORKSPACE / "memory"
         if not memory_dir.exists():
             return
 
-        import re
         md_files = sorted(memory_dir.glob("20??-??-??.md"))
         total_ingested = 0
 
@@ -269,14 +292,26 @@ class AutoIngestor:
                     continue
                 if self._is_test_content(text):
                     continue
+
+                h = self._content_hash(text)
+                if h in self._seen_hashes:
+                    continue
+
                 try:
-                    hub = _get_hub()
-                    hub.remember(
-                        content=text,
-                        source="auto_ingest",
-                        importance=0.6,
-                    )
+                    from memora.vectorstore import vector_store
+                    if vector_store.contains(text):
+                        self._seen_hashes.add(h)
+                        continue
+
+                    from memora.collector import collector
+                    collector.collect(text, source="auto_ingest", importance=0.6)
+                    vector_store.add(text, metadata={
+                        "source": "auto_ingest",
+                        "importance": 0.6,
+                        "timestamp": datetime.now().isoformat(),
+                    })
                     _kg_extract_async(text, 0.6)
+                    self._seen_hashes.add(h)
                     total_ingested += 1
                 except Exception as e:
                     logger.warning("AutoIngestor: ingest failed: %s", e)

@@ -2,6 +2,41 @@
 
 A production-grade cognitive architecture for the [OpenClaw](https://github.com/nicholasgasior/openclaw) AI agent framework. Four interconnected subsystems turn passive conversation logging into semantic retrieval, continual learning, document-level reasoning, and autonomous inspiration generation — with a **Knowledge Graph** inside Second Brain providing structured logical reasoning that RAG alone cannot achieve.
 
+**目录：** [产品目标](#产品目标) · [当前已满足与差距](#当前已满足与差距) · [Architecture](#architecture) · [Quick Start](#quick-start)
+
+## 产品目标
+
+本仓库的**正式产品目标**如下（便于全文搜索：直接搜「产品目标」或下段关键词「碎片化」「非连续时间」）：
+
+> 在当前信息环境下，支持**人**与 **Agent** 以**碎片化、发散化、非连续时间**的方式学习——断断续续、东一点西一点、往往没有明确的课题或课表；同时期望通过**长期时间积累**，逐步走向更**系统化**的理解、更**专业化**的深度，以及**可操作的**技能与规程。
+
+**North star（英文对照）：** Support humans and agents in today’s information environment through **fragmented, divergent, non-continuous learning** (patchy inputs, no fixed curriculum), while aiming—via **sustained accumulation over time**—for **systematic** understanding, **domain depth**, and **actionable** skills and procedures.
+
+各子系统（Memora、Chronos、MSA、Second Brain）历史上并非由同一份规格书一次写成，但**以上表述作为统一叙事**，用于对齐文档与路线图。
+
+## Product vision
+
+This section is the English mirror of **[产品目标](#产品目标)** above. The stack should feel like a personal/agent corpus that grows from noise toward usefulness.
+
+## 当前已满足与差距
+
+（英文小标题：**Vision alignment: satisfied vs. gaps** — 搜索「当前已满足」可定位本节。）
+
+| Area | Status | Notes |
+|------|--------|--------|
+| **Fragmented ingest** | **Largely satisfied** | `remember`, daily `memory/*.md`, AutoIngestor, HTTP API; text-first (video/chat need export/transcription upstream). |
+| **Persistence over time** | **Largely satisfied** | JSONL vector store, daily logs, bookmarks, ingestion state; dedup prevents runaway duplicates. |
+| **Recall when needed** | **Largely satisfied** | Semantic search (`recall` / `search`), merged Memora+MSA, `deep-recall` for multi-hop; quality depends on corpus cleanliness and query. |
+| **Light structure & “weaving”** | **Partial** | KG + relation extraction, digests, collision engine add edges and occasional insights—not guaranteed holistic “systemization.” |
+| **Proactive nudges** | **Partial** | Scheduler + Telegram, collision on a timer; not fully **problem-** or **task-grounded**. |
+| **Systematic + professional depth from accumulation alone** | **Not satisfied** | No automatic curriculum or domain mastery loop; depth comes from **how you use** recall + LLM, not from a finished “become expert” pipeline. |
+| **Actionable skills (OpenClaw Skills, SOPs)** | **Not satisfied** | Memory store ≠ Skill registry; promoting a snippet to a **durable, invocable Skill** is still **manual / workflow-dependent** (e.g. `SKILL.md`). |
+| **True parametric continual learning** | **Not satisfied** | Chronos tracks importance and personality artifacts; **EWC/LoRA paths are largely simulated**—see [STUBS.md](STUBS.md). |
+| **“Learning quality” & intent (e.g. thought vs. share)** | **Not satisfied** | No first-class labels; optional metadata/tags only. |
+| **Problem-triggered surfacing** | **Weak** | Strong when the user/agent issues a good query; **no** first-class “current task object” that always pulls the right slice of memory + skills. |
+
+**Summary:** The system today is strongest as **durable capture + semantic retrieval + periodic inspiration and KG reasoning**. The **tail of the vision**—automatic professionalism and **automatic** skill crystallization from fragments—is **direction, not done**.
+
 ## Architecture
 
 ```
@@ -285,7 +320,7 @@ memory-cli briefing                # Daily memory briefing
 ├── llm_client.py            # xAI Grok API wrapper
 ├── shared_embedder.py       # Singleton embedding model
 ├── setup.py                 # Package configuration
-├── tests/                   # 447 unit tests across 16 files
+├── tests/                   # 463 unit tests across 16 files
 │   ├── test_memora.py
 │   ├── test_chronos.py
 │   ├── test_msa.py
@@ -318,7 +353,7 @@ python3 -m pytest tests/ -q
 python3 -m pytest tests/ --cov=memora --cov=chronos --cov=msa --cov=second_brain --cov=memory_server --cov=memory_hub -q
 ```
 
-447 tests covering all four subsystems (including Second Brain's KG and inference engine), the server, the hub, and the CLI layer.
+463 tests covering all four subsystems (including Second Brain's KG and inference engine), the server, the hub, and the CLI layer.
 
 ## Embedding Model
 

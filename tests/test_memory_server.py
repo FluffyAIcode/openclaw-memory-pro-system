@@ -498,14 +498,29 @@ class TestAutoIngestor:
 
         ingestor = memory_server.AutoIngestor()
         ingestor._state_path = tmp_path / "memory" / "ingestion_state.json"
+        ingestor._hashes_path = tmp_path / "memory" / "ingestion_hashes.json"
 
-        mock_hub = MagicMock()
-        mock_hub.remember.return_value = {"systems_used": ["memora"], "word_count": 10}
-        with patch.object(memory_server, "_get_hub", return_value=mock_hub):
+        mock_collector_inst = MagicMock()
+        mock_collector_inst.collect.return_value = {"timestamp": "2026-03-21T10:00:00"}
+        mock_vs_inst = MagicMock()
+        mock_vs_inst.contains.return_value = False
+
+        import importlib
+        mc_mod = importlib.import_module("memora.collector")
+        vs_mod = importlib.import_module("memora.vectorstore")
+        orig_c = mc_mod.collector
+        orig_v = vs_mod.vector_store
+        mc_mod.collector = mock_collector_inst
+        vs_mod.vector_store = mock_vs_inst
+        try:
             with patch.object(memory_server, "_kg_extract_async"):
                 ingestor.scan_and_ingest()
+        finally:
+            mc_mod.collector = orig_c
+            vs_mod.vector_store = orig_v
 
-        assert mock_hub.remember.called
+        assert mock_vs_inst.add.called
+        assert mock_collector_inst.collect.called
         assert ingestor._state.get("2026-03-21.md") is not None
         memory_server._WORKSPACE = old_ws
 

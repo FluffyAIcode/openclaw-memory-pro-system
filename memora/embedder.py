@@ -34,7 +34,12 @@ class MockEmbedder:
 
 
 class SentenceTransformerEmbedder:
-    """真实嵌入模型，lazy-load 避免启动时阻塞。"""
+    """真实嵌入模型，lazy-load 避免启动时阻塞。
+
+    nomic-embed-text requires task prefixes for best quality:
+      - "search_document: " for stored content
+      - "search_query: "    for search queries
+    """
 
     def __init__(self, model_name: str = None, dimension: int = None):
         self.model_name = model_name or config.embedding_model
@@ -47,9 +52,16 @@ class SentenceTransformerEmbedder:
             self._model = SentenceTransformer(self.model_name, trust_remote_code=True)
             logger.info("Loaded SentenceTransformer: %s", self.model_name)
 
-    def embed(self, text: str) -> List[float]:
+    def embed(self, text: str, prefix: str = "search_document") -> List[float]:
         self._load()
-        return self._model.encode(text, normalize_embeddings=True).tolist()
+        prefixed = f"{prefix}: {text}"
+        return self._model.encode(prefixed, normalize_embeddings=True).tolist()
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed(text, prefix="search_query")
+
+    def embed_document(self, text: str) -> List[float]:
+        return self.embed(text, prefix="search_document")
 
 
 def _create_embedder():
@@ -83,8 +95,19 @@ class _EmbedderProxy:
             self._instance = _create_embedder()
         return self._instance
 
-    def embed(self, text: str) -> List[float]:
-        return self._get().embed(text)
+    def embed(self, text: str, prefix: str = "search_document") -> List[float]:
+        inst = self._get()
+        if hasattr(inst, "embed_document"):
+            if prefix == "search_query":
+                return inst.embed_query(text)
+            return inst.embed_document(text)
+        return inst.embed(text)
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed(text, prefix="search_query")
+
+    def embed_document(self, text: str) -> List[float]:
+        return self.embed(text, prefix="search_document")
 
     @property
     def dimension(self):
