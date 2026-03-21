@@ -109,29 +109,53 @@ class MemoryTracker:
                 count += 1
         return count
 
-    def find_dormant(self, entries: List[dict]) -> List[dict]:
-        """Find high-importance memories with no recent access.
+    def find_dormant(self, entries: List[dict],
+                     include_never_accessed: bool = False) -> List[dict]:
+        """Find high-importance memories that were accessed before but neglected since.
 
-        entries: list of dicts with keys: content, timestamp, metadata, score
-        Returns entries that are dormant (important but neglected).
+        Args:
+            entries: list of dicts with keys: content, timestamp, metadata, score
+            include_never_accessed: if True, also include memories that were
+                never accessed but are old enough (age > dormancy_age_days).
+                Default False — only returns memories that *were* accessed
+                at some point and then went dormant.
         """
         now = datetime.now()
         cutoff = now - timedelta(days=config.dormancy_age_days)
         dormant = []
 
         for e in entries:
-            importance = e.get("metadata", {}).get("importance", e.get("score", 0.5))
+            importance = e.get("importance",
+                               e.get("metadata", {}).get("importance",
+                                                          e.get("score", 0.5)))
             if importance < config.dormancy_importance_threshold:
                 continue
 
             content_hash = str(hash(e.get("content", "")))
             last_access = self._last_access_time(content_hash)
-            if last_access is None or last_access < cutoff:
+
+            if last_access is None:
+                if not include_never_accessed:
+                    continue
+                try:
+                    created = datetime.fromisoformat(e.get("timestamp", ""))
+                except (ValueError, TypeError):
+                    continue
+                age = (now - created).days
+                if age < config.dormancy_age_days:
+                    continue
                 dormant.append({
                     **e,
-                    "dormant_days": (now - (last_access or datetime.fromisoformat(
-                        e.get("timestamp", now.isoformat())))).days,
+                    "dormant_days": age,
                     "importance": importance,
+                    "dormant_reason": "never_accessed",
+                })
+            elif last_access < cutoff:
+                dormant.append({
+                    **e,
+                    "dormant_days": (now - last_access).days,
+                    "importance": importance,
+                    "dormant_reason": "stale",
                 })
 
         dormant.sort(key=lambda x: x.get("importance", 0), reverse=True)

@@ -345,21 +345,37 @@ def cmd_review_dormant(args):
     result = _get("/dormant")
     memories = result.get("memories", [])
     count = result.get("count", 0)
+    never_count = result.get("never_accessed_count", 0)
     threshold = result.get("threshold_days", 14)
 
-    if not memories:
+    if not memories and not never_count:
         print(f"没有沉睡记忆（阈值: {threshold} 天未访问 + 重要性 >= {result.get('threshold_importance', 0.7)}）")
         return
 
-    print(f"共 {count} 条沉睡记忆（超过 {threshold} 天未被访问）:\n")
-    for i, m in enumerate(memories, 1):
-        days = m.get("dormant_days", 0)
-        imp = m.get("importance", 0)
-        layer = m.get("layer", "?")
-        content = m.get("content", "")[:120]
-        print(f"  [{i}] {days}天未访问 | 重要性={imp:.2f} | 来源={layer}")
-        print(f"      {content}")
-        print()
+    if memories:
+        print(f"🔇 {count} 条真正沉睡的记忆（曾被访问，但超过 {threshold} 天未再访问）:\n")
+        for i, m in enumerate(memories, 1):
+            days = m.get("dormant_days", 0)
+            imp = m.get("importance", 0)
+            layer = m.get("layer", "?")
+            content = m.get("content", "")[:120]
+            print(f"  [{i}] {days}天未访问 | 重要性={imp:.2f} | 来源={layer}")
+            print(f"      {content}")
+            print()
+    else:
+        print("没有真正沉睡的记忆（所有曾访问过的记忆都在活跃状态）。")
+
+    never = result.get("never_accessed", [])
+    if never:
+        print(f"\n📭 另有 {never_count} 条重要记忆从未被召回（最早的 {len(never)} 条）:\n")
+        for i, m in enumerate(never, 1):
+            days = m.get("dormant_days", 0)
+            imp = m.get("importance", 0)
+            content = m.get("content", "")[:100]
+            print(f"  [{i}] 创建 {days} 天 | 重要性={imp:.2f}")
+            print(f"      {content}")
+            print()
+
     print("提示: 用 memory-cli recall \"关键词\" 可唤醒相关记忆")
 
 

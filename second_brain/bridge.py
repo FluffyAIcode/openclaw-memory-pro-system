@@ -140,7 +140,7 @@ class SecondBrainBridge:
                 all_entries.append(e)
 
         recent_insights = self._load_recent_insights(days=1)
-        dormant = tracker.find_dormant(all_entries)
+        dormant = tracker.find_dormant(all_entries, include_never_accessed=False)
         trends = tracker.find_trends()
 
         vitality_buckets = {"high": [], "medium": [], "low": []}
@@ -294,9 +294,13 @@ class SecondBrainBridge:
                 e["_layer"] = layer
                 all_entries.append(e)
 
-        dormant = tracker.find_dormant(all_entries)
+        stale = tracker.find_dormant(all_entries, include_never_accessed=False)
+        never = tracker.find_dormant(all_entries, include_never_accessed=True)
+        never_only = [d for d in never if d.get("dormant_reason") == "never_accessed"]
+
         return {
-            "count": len(dormant),
+            "count": len(stale),
+            "never_accessed_count": len(never_only),
             "threshold_days": config.dormancy_age_days,
             "threshold_importance": config.dormancy_importance_threshold,
             "memories": [
@@ -306,8 +310,19 @@ class SecondBrainBridge:
                     "dormant_days": d.get("dormant_days", 0),
                     "layer": d.get("_layer", "?"),
                     "timestamp": str(d.get("timestamp", ""))[:10],
+                    "reason": d.get("dormant_reason", "stale"),
                 }
-                for d in dormant
+                for d in stale
+            ],
+            "never_accessed": [
+                {
+                    "content": d.get("content", "")[:200],
+                    "importance": d.get("importance", 0),
+                    "dormant_days": d.get("dormant_days", 0),
+                    "layer": d.get("_layer", "?"),
+                    "timestamp": str(d.get("timestamp", ""))[:10],
+                }
+                for d in never_only[:10]
             ],
         }
 

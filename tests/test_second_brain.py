@@ -87,7 +87,7 @@ class TestMemoryTracker:
         v_without = t.vitality(0.8, datetime.now().isoformat(), content_hash="hash_none")
         assert v_with > v_without
 
-    def test_find_dormant(self, tmp_path):
+    def test_find_dormant_never_accessed_excluded_by_default(self, tmp_path):
         t = self._make_tracker(tmp_path)
         entries = [
             {"content": "important stuff", "timestamp": (datetime.now() - timedelta(days=30)).isoformat(),
@@ -96,8 +96,34 @@ class TestMemoryTracker:
              "metadata": {"importance": 0.3}, "importance": 0.3},
         ]
         dormant = t.find_dormant(entries)
+        assert len(dormant) == 0
+
+    def test_find_dormant_never_accessed_included(self, tmp_path):
+        t = self._make_tracker(tmp_path)
+        entries = [
+            {"content": "important stuff", "timestamp": (datetime.now() - timedelta(days=30)).isoformat(),
+             "metadata": {"importance": 0.9}, "importance": 0.9},
+        ]
+        dormant = t.find_dormant(entries, include_never_accessed=True)
         assert len(dormant) == 1
         assert dormant[0]["content"] == "important stuff"
+        assert dormant[0]["dormant_reason"] == "never_accessed"
+
+    def test_find_dormant_stale_access(self, tmp_path):
+        t = self._make_tracker(tmp_path)
+        t.track("m1", str(hash("important stuff")), "old query")
+        t._records[-1].timestamp = (datetime.now() - timedelta(days=20)).isoformat()
+        with open(t._log_file, "w") as f:
+            for r in t._records:
+                f.write(json.dumps(r.to_dict(), ensure_ascii=False) + "\n")
+        entries = [
+            {"content": "important stuff", "timestamp": (datetime.now() - timedelta(days=30)).isoformat(),
+             "metadata": {"importance": 0.9}, "importance": 0.9},
+        ]
+        t._records = None
+        dormant = t.find_dormant(entries)
+        assert len(dormant) == 1
+        assert dormant[0]["dormant_reason"] == "stale"
 
     def test_find_trends(self, tmp_path):
         t = self._make_tracker(tmp_path)
@@ -310,20 +336,32 @@ class TestCollisionEngineV2:
         content = fp.read_text()
         assert "灵感碰撞" in content
 
-    def test_index_high_novelty_with_cross_layer(self, tmp_path):
+    def test_index_high_novelty_logs_only(self, tmp_path):
         from second_brain.collision import CollisionEngine, Insight
         eng = CollisionEngine()
         eng._insights_path = tmp_path
-        ins = Insight("a", "b", "chronos_crossref", "cool", "idea", 5,
+        ins = Insight("a", "b", "chronos_crossref", "cool connection", "idea", 5,
                       source_a="chronos", source_b="memora")
-        mock_vs = MagicMock()
-        with patch.dict("sys.modules",
-                        {"memora": MagicMock(), "memora.vectorstore": MagicMock(vector_store=mock_vs)}):
-            eng.index_high_novelty([ins])
-            mock_vs.add.assert_called_once()
-            call_kwargs = mock_vs.add.call_args
-            metadata = call_kwargs[1]["metadata"] if "metadata" in call_kwargs[1] else call_kwargs[0][1]
-            assert "cross_layers" in metadata or "chronos" in str(call_kwargs)
+        eng.index_high_novelty([ins])
+
+    def test_filter_pool_removes_collision_entries(self):
+        from second_brain.collision import _filter_pool
+        pool = {
+            "memora_vectors": [
+                {"content": "real memory about Python"},
+                {"content": "[灵感碰撞-semantic_bridge] 联系: something"},
+                {"content": "[深度碰撞] 基于 5 篇文档的推理"},
+                {"content": "another real memory"},
+            ],
+            "chronos_encoded": [
+                {"content": "Chronos memory"},
+            ],
+        }
+        filtered = _filter_pool(pool)
+        assert len(filtered["memora_vectors"]) == 2
+        assert len(filtered["chronos_encoded"]) == 1
+        assert all(not e["content"].startswith("[灵感碰撞-")
+                   for e in filtered["memora_vectors"])
 
 
 # ── Bridge v2 ─────────────────────────────────────────────────
@@ -712,7 +750,7 @@ class TestMemoryCLISecondBrain:
             }
             cmd_review_dormant(None)
             out = capsys.readouterr().out
-            assert "2 条沉睡记忆" in out
+            assert "2 条真正沉睡" in out
             assert "old memory" in out
             assert "20天未访问" in out
 
