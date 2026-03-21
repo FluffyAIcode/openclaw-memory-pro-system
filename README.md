@@ -1,6 +1,6 @@
 # OpenClaw Memory Pro System
 
-A production-grade cognitive architecture for the [OpenClaw](https://github.com/nicholasgasior/openclaw) AI agent framework. Five interconnected subsystems — including a **Knowledge Graph cognitive engine** — turn passive conversation logging into semantic retrieval, continual learning, document-level reasoning, structured logical reasoning, and autonomous inspiration generation.
+A production-grade cognitive architecture for the [OpenClaw](https://github.com/nicholasgasior/openclaw) AI agent framework. Four interconnected subsystems turn passive conversation logging into semantic retrieval, continual learning, document-level reasoning, and autonomous inspiration generation — with a **Knowledge Graph** inside Second Brain providing structured logical reasoning that RAG alone cannot achieve.
 
 ## Architecture
 
@@ -20,57 +20,84 @@ A production-grade cognitive architecture for the [OpenClaw](https://github.com/
 │  └──────────────────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │                     Memory Hub (router)                   │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────┐ │   │
-│  │  │  Memora   │ │ Chronos  │ │   MSA    │ │Second Brain │ │   │
-│  │  │  (RAG)   │ │  (CL)    │ │ (Sparse) │ │(KG+Insights)│ │   │
-│  │  └──────────┘ └──────────┘ └──────────┘ └──────┬──────┘ │   │
-│  │                                                 │        │   │
-│  │  ┌──────────────────────────────────────────────▼──────┐ │   │
-│  │  │           Knowledge Graph (NetworkX DiGraph)         │ │   │
-│  │  │  Nodes: fact/decision/preference/goal/question       │ │   │
-│  │  │  Edges: supports/contradicts/extends/depends_on      │ │   │
-│  │  │  → Contradiction Detection                           │ │   │
-│  │  │  → Absence Reasoning (Blind Spot Detection)          │ │   │
-│  │  │  → Forward Propagation (Impact Tracing)              │ │   │
-│  │  │  → Thread Discovery (Community Detection)            │ │   │
-│  │  └─────────────────────────┬────────────────────────────┘ │   │
-│  │                            │ mature patterns              │   │
-│  │                            ▼                              │   │
-│  │                   Internalization Manager                  │   │
-│  │                   → Chronos PERSONALITY.yaml               │   │
-│  │                   → LoRA training data (future)            │   │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐                  │   │
+│  │  │  Memora   │ │ Chronos  │ │   MSA    │                  │   │
+│  │  │  (RAG)   │ │  (CL)    │ │ (Sparse) │                  │   │
+│  │  └──────────┘ └──────────┘ └──────────┘                  │   │
+│  │  ┌───────────────────────────────────────────────────┐    │   │
+│  │  │                  Second Brain                      │    │   │
+│  │  │  ┌─────────────────────────────────────────────┐  │    │   │
+│  │  │  │  Tracker (vitality, dormancy, trends)        │  │    │   │
+│  │  │  └─────────────────────────────────────────────┘  │    │   │
+│  │  │  ┌─────────────────────────────────────────────┐  │    │   │
+│  │  │  │  Collision Engine (7 strategies, adaptive)   │  │    │   │
+│  │  │  │  5 RAG-based + 2 KG-driven strategies       │  │    │   │
+│  │  │  └──────────────────────┬──────────────────────┘  │    │   │
+│  │  │                         │ read/write               │    │   │
+│  │  │  ┌──────────────────────▼──────────────────────┐  │    │   │
+│  │  │  │  Knowledge Graph (NetworkX DiGraph)          │  │    │   │
+│  │  │  │  Nodes: fact/decision/preference/goal/question│  │    │   │
+│  │  │  │  Edges: supports/contradicts/extends/...     │  │    │   │
+│  │  │  │  Storage: memory/kg/nodes.jsonl + edges.jsonl│  │    │   │
+│  │  │  └──────────────────────┬──────────────────────┘  │    │   │
+│  │  │                         │ inference                │    │   │
+│  │  │  ┌──────────────────────▼──────────────────────┐  │    │   │
+│  │  │  │  Inference Engine                            │  │    │   │
+│  │  │  │  → Contradiction Detection                   │  │    │   │
+│  │  │  │  → Absence Reasoning (Blind Spots)           │  │    │   │
+│  │  │  │  → Forward Propagation                       │  │    │   │
+│  │  │  │  → Thread Discovery (Community Detection)    │  │    │   │
+│  │  │  └──────────────────────┬──────────────────────┘  │    │   │
+│  │  │                         │ mature patterns          │    │   │
+│  │  │  ┌──────────────────────▼──────────────────────┐  │    │   │
+│  │  │  │  Internalization → Chronos PERSONALITY.yaml  │  │    │   │
+│  │  │  └─────────────────────────────────────────────┘  │    │   │
+│  │  └───────────────────────────────────────────────────┘    │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Five Memory Subsystems
+### Four Memory Subsystems
 
 | System | Purpose | Storage | Key Capability |
 |--------|---------|---------|----------------|
 | **Memora** | Snippet-level semantic search | Vector store (JSONL) | RAG with real embeddings, LLM-powered daily digests |
 | **Chronos** | Continual learning | Replay buffer + EWC state | Importance-weighted memory encoding, personality profile generation |
 | **MSA** | Document-level reasoning | Tiered (routing keys in RAM, content on disk) | Sparse attention routing, multi-hop interleave with LLM |
-| **Second Brain** | Active memory lifecycle + cognitive reasoning | Access log + insights + KG | Vitality tracking, inspiration collision, **Knowledge Graph** |
-| **Knowledge Graph** | Structured logical reasoning | NetworkX DiGraph (JSONL) | Contradiction detection, absence reasoning, forward propagation |
+| **Second Brain** | Cognitive engine: tracking + collision + KG reasoning | Access log + insights JSONL + KG JSONL | Vitality tracking, 7-strategy inspiration collision, Knowledge Graph inference, internalization pipeline |
 
-### Knowledge Graph — What RAG Cannot Do
+### Second Brain Internal Architecture
 
-The Knowledge Graph is the core differentiator of this system. While RAG retrieves by cosine similarity, the KG reasons by typed logical relationships:
+Second Brain is more than a memory tracker — it is the cognitive engine of the system. Its internal layers:
 
-| Capability | RAG | Knowledge Graph |
-|------------|-----|-----------------|
-| Find similar content | Yes | — |
-| Find logically related content (even if semantically distant) | No | **Yes** — graph traversal along typed edges |
-| Detect contradictions | No | **Yes** — `contradicts` edges between facts and decisions |
-| Discover blind spots (what hasn't been considered) | No | **Yes** — absence reasoning: expected dimensions minus covered dimensions |
-| Trace impact of new information | No | **Yes** — forward propagation along `depends_on`/`supports` chains |
-| Auto-discover thought threads | No | **Yes** — community detection on the graph |
+1. **Tracker** — Memory vitality scoring, dormancy detection, trend analysis
+2. **Collision Engine** — 7-strategy inspiration generation (5 RAG-based + 2 KG-driven), with adaptive strategy weights
+3. **Knowledge Graph** — Structured storage for insights and knowledge relationships (JSONL persistence via NetworkX DiGraph). Nodes represent knowledge units (facts, decisions, preferences, goals, questions); edges represent logical relationships (supports, contradicts, extends, depends_on, alternative_to, addresses)
+4. **Inference Engine** — Operates on the KG to provide reasoning that RAG cannot:
+   - **Contradiction Detection**: scans `contradicts` edges to find decisions with conflicting evidence
+   - **Absence Reasoning**: generates expected dimensions for a decision, identifies which are missing (blind spots)
+   - **Forward Propagation**: traces impact of new facts through `depends_on`/`supports` chains
+   - **Thread Discovery**: community detection to auto-discover related knowledge clusters
+5. **Internalization Manager** — Extracts high-maturity KG patterns and feeds them into Chronos for PERSONALITY.yaml generation (explicit KG knowledge → implicit agent behavior)
 
-**How it works:**
-1. Every `/remember` call triggers async relation extraction (LLM + embedding pre-filter)
-2. LLM identifies knowledge units (facts, decisions, preferences, goals, questions) and their logical relationships
-3. The inference engine continuously monitors for contradictions, blind spots, and impact chains
-4. High-maturity patterns (frequently accessed, high confidence, stable over time) feed into Chronos for PERSONALITY.yaml generation — the "internalization pipeline" from explicit (KG) to implicit (model behavior) memory
+**Data flow within Second Brain:**
+
+```
+New memory ──→ Relation Extractor (LLM) ──→ KG nodes/edges (JSONL)
+                                                    │
+Collision Engine ←── reads KG for strategies 6 & 7 ─┘
+       │
+       ├── writes insights (JSONL)
+       └── user rates insight → strategy weight update
+                                                    │
+Inference Engine ←── reads KG ──────────────────────┘
+       │
+       └── contradictions / blind spots / propagation alerts
+                                                    │
+Internalization Manager ←── reads mature KG nodes ──┘
+       │
+       └── patterns → Chronos consolidator → PERSONALITY.yaml
+```
 
 ### Service Layer
 
@@ -80,8 +107,7 @@ The Knowledge Graph is the core differentiator of this system. While RAG retriev
 | **Memory Server** | Persistent HTTP daemon — keeps the embedding model loaded, exposes all operations as REST endpoints, async task queue for slow operations |
 | **memory-cli** | Zero-dependency HTTP client — async polling with progress spinner for long-running tasks |
 | **LLM Client** | Unified xAI Grok API wrapper — used by digest, interleave, consolidation, collision, and KG relation extraction |
-| **Shared Embedder** | Singleton `nomic-ai/nomic-embed-text-v1.5` instance shared across Memora, MSA, and KG candidate pre-filtering |
-| **Internalization Manager** | Bridges KG (explicit) to Chronos (implicit) — extracts mature patterns for personality profiles and future LoRA training |
+| **Shared Embedder** | Singleton `nomic-ai/nomic-embed-text-v1.5` instance shared across Memora, MSA, and Second Brain's KG candidate pre-filtering |
 
 ## How It Works
 
@@ -95,7 +121,7 @@ Content arrives at hub.remember()
     └── > 500 words ───────────────────────> Memora + MSA + Chronos
     │
     ├── Always writes to memory/YYYY-MM-DD.md (daily log)
-    └── Async: KG relation extraction (if importance >= 0.4)
+    └── Async: Second Brain KG relation extraction (if importance >= 0.4)
 ```
 
 ### Query Routing
@@ -206,16 +232,12 @@ memory-cli recall "用户的UI偏好"
 # Deep multi-hop reasoning
 memory-cli deep-recall "根据用户过去的反馈，他们最可能接受什么样的新功能？"
 
-# Run inspiration collision (7 strategies, adaptive weights)
-memory-cli collide
-
-# Knowledge Graph — reasoning RAG cannot do
-memory-cli contradictions          # Find decisions with conflicting evidence
-memory-cli blindspots              # Detect unexplored dimensions in decisions
-memory-cli threads                 # Discover thought threads via community detection
+# Second Brain — collision + KG reasoning
+memory-cli collide                 # Run inspiration collision (7 strategies, adaptive weights)
+memory-cli contradictions          # KG: find decisions with conflicting evidence
+memory-cli blindspots              # KG: detect unexplored dimensions in decisions
+memory-cli threads                 # KG: discover thought threads via community detection
 memory-cli graph-status            # KG statistics
-
-# Feedback loop
 memory-cli rate <insight_id> <1-5> # Rate an insight to improve future collisions
 memory-cli insight-stats           # View strategy performance
 
@@ -248,14 +270,14 @@ memory-cli briefing                # Daily memory briefing
 │   ├── router.py            # Batch cosine similarity top-k selection
 │   ├── interleave.py        # Multi-hop retrieval-generation loops
 │   └── bridge.py            # Integration with cross-indexing to Memora
-├── second_brain/            # Cognitive engine + active memory lifecycle
-│   ├── knowledge_graph.py   # KGNode/KGEdge + NetworkX DiGraph + JSONL persistence
-│   ├── relation_extractor.py # LLM-based relation extraction + embedding pre-filter
-│   ├── inference.py         # Contradiction detection, absence reasoning, propagation
-│   ├── internalization.py   # Maturity tracking, pattern extraction, training data
-│   ├── strategy_weights.py  # Adaptive collision strategy selection via ratings
+├── second_brain/            # Cognitive engine: tracking + collision + KG reasoning
 │   ├── tracker.py           # Vitality scoring, dormancy detection, trends
 │   ├── collision.py         # 7-strategy inspiration engine (5 RAG + 2 KG-driven)
+│   ├── strategy_weights.py  # Adaptive collision strategy selection via ratings
+│   ├── knowledge_graph.py   # KGNode/KGEdge + NetworkX DiGraph (insight storage)
+│   ├── relation_extractor.py # LLM-based relation extraction + embedding pre-filter
+│   ├── inference.py         # Contradiction detection, absence reasoning, propagation
+│   ├── internalization.py   # Maturity tracking → Chronos PERSONALITY.yaml
 │   └── bridge.py            # Unified interface
 ├── memory_server.py         # HTTP daemon with async task queue
 ├── memory_hub.py            # Unified ingestion/query router
@@ -296,7 +318,7 @@ python3 -m pytest tests/ -q
 python3 -m pytest tests/ --cov=memora --cov=chronos --cov=msa --cov=second_brain --cov=memory_server --cov=memory_hub -q
 ```
 
-447 tests covering all subsystems, the Knowledge Graph, the inference engine, the server, the hub, and the CLI layer.
+447 tests covering all four subsystems (including Second Brain's KG and inference engine), the server, the hub, and the CLI layer.
 
 ## Embedding Model
 
