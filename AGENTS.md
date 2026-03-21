@@ -15,6 +15,7 @@ Before doing anything else:
 3. Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context
 4. **If in MAIN SESSION** (direct chat with your human): Also read `MEMORY.md`
 5. Read `PERSONALITY.yaml` if it exists — your evolved personality from Chronos consolidation
+6. **记忆预加载（主会话）**：运行 `memory-cli briefing` 获取今日简报，了解沉睡记忆、趋势话题、最近灵感。如果用户昨天讨论过某个话题，用 `memory-cli recall "话题关键词"` 预加载上下文，这样你可以主动接续上次对话（例如："上次你提到X，后来进展如何？"）
 
 Don't ask permission. Just do it.
 
@@ -41,6 +42,21 @@ You wake up fresh each session. These files are your continuity:
 - **直接 CLI（无需 Server 也可用）:** `python3 -m memora/chronos/msa/second_brain` 命令仍然有效，但启动较慢（每次加载模型 10-30s）。推荐用 memory-cli。
 
 Capture what matters. Decisions, context, things to remember. Skip the secrets unless asked to keep them.
+
+### 🔍 回复前先查记忆
+
+当用户问到一个具体话题或项目时，**先用 `memory-cli recall "话题"` 检查历史记忆**，再回复。自然地引用过去的讨论：
+- "根据 3 月 15 日的讨论，你已经确定了 ESP32-S3 方案..."
+- "你之前提到不喜欢弹窗通知，所以这次方案避开了..."
+
+不要每次都声明"我查了记忆"，像人类一样自然地引用即可。如果记忆中没有相关内容，就正常回答。
+
+### 💤 沉睡记忆复苏
+
+当用户提到的话题恰好与一条沉睡记忆相关时，主动提及它：
+- "这让我想起你两周前提到过一个想法 —— X，当时你说很有启发。要不要重新展开？"
+
+可以通过 `memory-cli review-dormant` 查看所有沉睡记忆。不要强制插入，只在自然相关时提及。
 
 ### 🧠 MEMORY.md - Your Long-Term Memory
 

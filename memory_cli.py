@@ -286,6 +286,83 @@ def cmd_tasks(args):
             print(f"    Error: {t.get('error', '')[:100]}")
 
 
+def cmd_briefing(args):
+    result = _get("/briefing")
+    print(result.get("text", "无法生成简报"))
+    dist = result.get("vitality_distribution", {})
+    if dist:
+        print(f"\n活力分布: 高={dist.get('high', 0)} 中={dist.get('medium', 0)} 低={dist.get('low', 0)}")
+
+
+def cmd_vitality(args):
+    result = _get("/vitality")
+    total = result.get("total", 0)
+    dist = result.get("distribution", {})
+    high = dist.get("high", 0)
+    medium = dist.get("medium", 0)
+    low = dist.get("low", 0)
+
+    bar_h = "█" * min(high, 40)
+    bar_m = "█" * min(medium, 40)
+    bar_l = "█" * min(low, 40)
+
+    print(f"记忆活力分布 (共 {total} 条):")
+    print(f"  {bar_h}  高活力 (>0.7): {high} 条")
+    print(f"  {bar_m}  中活力 (0.4-0.7): {medium} 条")
+    print(f"  {bar_l}  低活力 (<0.4): {low} 条")
+
+    top = result.get("top_active", [])
+    if top:
+        print("\n最活跃:")
+        for t in top[:5]:
+            print(f"  [{t['vitality']:.2f}] {t['content'][:80]}")
+
+    near = result.get("nearly_dormant", [])
+    if near:
+        print("\n即将沉睡:")
+        for n in near[:5]:
+            print(f"  [{n['vitality']:.2f}] ({n.get('timestamp', '?')}) {n['content'][:80]}")
+
+
+def cmd_inspect(args):
+    result = _post("/inspect", {"query": args.query})
+    matches = result.get("matches", [])
+    if not matches:
+        print("未找到匹配的记忆。")
+        return
+    for i, m in enumerate(matches, 1):
+        print(f"\n  [{i}] (相似度={m.get('score', 0):.4f})")
+        print(f"      内容: {m.get('content', '')[:200]}")
+        print(f"      来源: {m.get('source', '?')} | 时间: {m.get('timestamp', '?')}")
+        print(f"      重要性: {m.get('importance', 0):.2f} | 活力: {m.get('vitality', 0):.2f}")
+        print(f"      被召回: {m.get('access_count', 0)} 次 | 最后访问: {m.get('last_accessed', '从未')}")
+        insights = m.get("related_insights", [])
+        if insights:
+            print(f"      关联灵感: {', '.join(i.get('date', '') for i in insights)}")
+
+
+def cmd_review_dormant(args):
+    result = _get("/dormant")
+    memories = result.get("memories", [])
+    count = result.get("count", 0)
+    threshold = result.get("threshold_days", 14)
+
+    if not memories:
+        print(f"没有沉睡记忆（阈值: {threshold} 天未访问 + 重要性 >= {result.get('threshold_importance', 0.7)}）")
+        return
+
+    print(f"共 {count} 条沉睡记忆（超过 {threshold} 天未被访问）:\n")
+    for i, m in enumerate(memories, 1):
+        days = m.get("dormant_days", 0)
+        imp = m.get("importance", 0)
+        layer = m.get("layer", "?")
+        content = m.get("content", "")[:120]
+        print(f"  [{i}] {days}天未访问 | 重要性={imp:.2f} | 来源={layer}")
+        print(f"      {content}")
+        print()
+    print("提示: 用 memory-cli recall \"关键词\" 可唤醒相关记忆")
+
+
 def cmd_server_stop(args):
     pid_file = _WORKSPACE / "memory" / "server.pid"
     if not pid_file.exists():
@@ -359,6 +436,19 @@ def main():
 
     p = sub.add_parser("sb-status", help="Second Brain quick status")
     p.set_defaults(func=cmd_sb_status)
+
+    p = sub.add_parser("briefing", help="Daily memory briefing")
+    p.set_defaults(func=cmd_briefing)
+
+    p = sub.add_parser("vitality", help="Memory vitality distribution")
+    p.set_defaults(func=cmd_vitality)
+
+    p = sub.add_parser("inspect", help="Inspect memory lifecycle")
+    p.add_argument("query", help="Topic or keyword to inspect")
+    p.set_defaults(func=cmd_inspect)
+
+    p = sub.add_parser("review-dormant", help="List all dormant memories")
+    p.set_defaults(func=cmd_review_dormant)
 
     p = sub.add_parser("tasks", help="List async tasks")
     p.set_defaults(func=cmd_tasks)

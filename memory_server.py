@@ -373,6 +373,10 @@ def _execute_endpoint(path: str, body: dict) -> dict:
         from second_brain.bridge import bridge as sb_bridge
         return sb_bridge.deep_collide(topic=body.get("topic", ""))
 
+    elif path == "/inspect":
+        from second_brain.bridge import bridge as sb_bridge
+        return sb_bridge.memory_lifecycle(query=body.get("query", ""))
+
     elif path == "/second-brain/track":
         from second_brain.bridge import bridge as sb_bridge
         sb_bridge.track_access(
@@ -480,6 +484,21 @@ class MemoryHandler(BaseHTTPRequestHandler):
         elif self.path == "/tasks":
             tasks = _task_manager.list_tasks()
             self._respond(200, {"tasks": tasks, "count": len(tasks)})
+
+        elif self.path == "/briefing":
+            from second_brain.bridge import bridge as sb_bridge
+            result = sb_bridge.daily_briefing()
+            self._respond(200, result)
+
+        elif self.path == "/vitality":
+            from second_brain.bridge import bridge as sb_bridge
+            result = sb_bridge.vitality_list()
+            self._respond(200, result)
+
+        elif self.path == "/dormant":
+            from second_brain.bridge import bridge as sb_bridge
+            result = sb_bridge.list_dormant()
+            self._respond(200, result)
 
         elif self.path == "/second-brain/report":
             from second_brain.bridge import bridge as sb_bridge

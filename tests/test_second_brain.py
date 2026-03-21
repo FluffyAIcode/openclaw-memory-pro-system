@@ -634,3 +634,320 @@ class TestMemoryCLISecondBrain:
             cmd_sb_status(None)
             out = capsys.readouterr().out
             assert "second_brain" in out
+
+    def test_cmd_briefing(self, capsys):
+        from memory_cli import cmd_briefing
+        with patch("memory_cli._get") as mock_get:
+            mock_get.return_value = {
+                "text": "☀️ 2026-01-01 记忆简报\n\n🧠 记忆总量 10 条",
+                "vitality_distribution": {"high": 3, "medium": 5, "low": 2},
+            }
+            cmd_briefing(None)
+            out = capsys.readouterr().out
+            assert "记忆简报" in out
+            assert "高=3" in out
+
+    def test_cmd_vitality(self, capsys):
+        from memory_cli import cmd_vitality
+        with patch("memory_cli._get") as mock_get:
+            mock_get.return_value = {
+                "total": 10,
+                "distribution": {"high": 3, "medium": 5, "low": 2},
+                "top_active": [
+                    {"vitality": 0.9, "content": "active memory"},
+                ],
+                "nearly_dormant": [
+                    {"vitality": 0.3, "content": "fading memory", "timestamp": "2026-01-01"},
+                ],
+            }
+            cmd_vitality(None)
+            out = capsys.readouterr().out
+            assert "记忆活力分布" in out
+            assert "高活力" in out
+            assert "active memory" in out
+
+    def test_cmd_inspect(self, capsys):
+        from memory_cli import cmd_inspect
+        mock_args = MagicMock()
+        mock_args.query = "test topic"
+        with patch("memory_cli._post") as mock_post:
+            mock_post.return_value = {
+                "query": "test topic",
+                "matches": [
+                    {"score": 0.85, "content": "relevant memory",
+                     "source": "memora", "timestamp": "2026-01-01",
+                     "importance": 0.8, "vitality": 0.75,
+                     "access_count": 3, "last_accessed": "2026-03-01",
+                     "related_insights": []},
+                ],
+            }
+            cmd_inspect(mock_args)
+            out = capsys.readouterr().out
+            assert "relevant memory" in out
+            assert "0.8500" in out
+
+    def test_cmd_inspect_no_matches(self, capsys):
+        from memory_cli import cmd_inspect
+        mock_args = MagicMock()
+        mock_args.query = "nothing"
+        with patch("memory_cli._post") as mock_post:
+            mock_post.return_value = {"query": "nothing", "matches": []}
+            cmd_inspect(mock_args)
+            out = capsys.readouterr().out
+            assert "未找到" in out
+
+    def test_cmd_review_dormant(self, capsys):
+        from memory_cli import cmd_review_dormant
+        with patch("memory_cli._get") as mock_get:
+            mock_get.return_value = {
+                "count": 2,
+                "threshold_days": 14,
+                "threshold_importance": 0.7,
+                "memories": [
+                    {"content": "old memory", "importance": 0.8,
+                     "dormant_days": 20, "layer": "memora", "timestamp": "2026-01-01"},
+                    {"content": "another old", "importance": 0.9,
+                     "dormant_days": 30, "layer": "chronos", "timestamp": "2025-12-15"},
+                ],
+            }
+            cmd_review_dormant(None)
+            out = capsys.readouterr().out
+            assert "2 条沉睡记忆" in out
+            assert "old memory" in out
+            assert "20天未访问" in out
+
+    def test_cmd_review_dormant_empty(self, capsys):
+        from memory_cli import cmd_review_dormant
+        with patch("memory_cli._get") as mock_get:
+            mock_get.return_value = {
+                "count": 0, "threshold_days": 14,
+                "threshold_importance": 0.7, "memories": [],
+            }
+            cmd_review_dormant(None)
+            out = capsys.readouterr().out
+            assert "没有沉睡记忆" in out
+
+
+# ── Bridge new methods ────────────────────────────────────────
+
+class TestBridgeDailyBriefing:
+    def test_daily_briefing_basic(self):
+        from second_brain.bridge import SecondBrainBridge
+        bmod = _get_bridge_mod()
+        br = SecondBrainBridge()
+
+        pool = _make_pool(memora_count=3, chronos_count=2)
+        br._build_memory_pool = MagicMock(return_value=pool)
+        br._load_recent_insights = MagicMock(return_value=[])
+
+        total = sum(len(v) for v in pool.values())
+
+        mock_tracker = MagicMock()
+        mock_tracker.find_dormant.return_value = []
+        mock_tracker.find_trends.return_value = []
+        mock_tracker.vitality.return_value = 0.6
+
+        old = bmod.tracker
+        bmod.tracker = mock_tracker
+        try:
+            result = br.daily_briefing()
+            assert "text" in result
+            assert "date" in result
+            assert "vitality_distribution" in result
+            assert result["total_memories"] == total
+            assert "记忆简报" in result["text"]
+        finally:
+            bmod.tracker = old
+
+    def test_daily_briefing_with_insights(self):
+        from second_brain.bridge import SecondBrainBridge
+        bmod = _get_bridge_mod()
+        br = SecondBrainBridge()
+
+        pool = _make_pool(memora_count=2, chronos_count=1)
+        br._build_memory_pool = MagicMock(return_value=pool)
+        br._load_recent_insights = MagicMock(return_value=[
+            {"date": "2026-03-14", "insight_count": 3,
+             "preview": "### 灵感碰撞\n联系发现: something important"},
+        ])
+
+        mock_tracker = MagicMock()
+        mock_tracker.find_dormant.return_value = [
+            {"content": "dormant thing", "dormant_days": 20, "importance": 0.8}
+        ]
+        mock_tracker.find_trends.return_value = [
+            {"hits": 5, "queries": ["AI research"]}
+        ]
+        mock_tracker.vitality.return_value = 0.8
+
+        old = bmod.tracker
+        bmod.tracker = mock_tracker
+        try:
+            result = br.daily_briefing()
+            assert result["insight_count"] == 3
+            assert result["dormant_count"] == 1
+            assert result["trend_count"] == 1
+            assert "灵感碰撞" in result["text"]
+            assert "沉睡" in result["text"]
+        finally:
+            bmod.tracker = old
+
+
+class TestBridgeVitalityList:
+    def test_vitality_list(self):
+        from second_brain.bridge import SecondBrainBridge
+        bmod = _get_bridge_mod()
+        br = SecondBrainBridge()
+
+        pool = _make_pool(memora_count=3, chronos_count=2)
+        total = sum(len(v) for v in pool.values())
+        br._build_memory_pool = MagicMock(return_value=pool)
+
+        mock_tracker = MagicMock()
+        vitality_values = [0.9, 0.8, 0.5, 0.3, 0.2] + [0.6] * total
+        mock_tracker.vitality.side_effect = vitality_values[:total]
+
+        old = bmod.tracker
+        bmod.tracker = mock_tracker
+        try:
+            result = br.vitality_list()
+            assert result["total"] == total
+            assert "distribution" in result
+            assert len(result["top_active"]) <= 5
+        finally:
+            bmod.tracker = old
+
+
+class TestBridgeMemoryLifecycle:
+    def test_memory_lifecycle(self):
+        from second_brain.bridge import SecondBrainBridge
+        bmod = _get_bridge_mod()
+        br = SecondBrainBridge()
+
+        mock_vs = MagicMock()
+        mock_vs.search.return_value = [
+            {"content": "test content", "score": 0.85,
+             "metadata": {"importance": 0.8, "source": "cli"},
+             "timestamp": datetime.now().isoformat()},
+        ]
+
+        mock_tracker = MagicMock()
+        mock_tracker._count_hits.return_value = 3
+        mock_tracker.vitality.return_value = 0.75
+        mock_tracker._last_access_time.return_value = datetime.now()
+
+        old_tracker = bmod.tracker
+        bmod.tracker = mock_tracker
+        br._find_related_insights = MagicMock(return_value=[])
+        try:
+            with patch.dict("sys.modules", {
+                "memora.vectorstore": MagicMock(vector_store=mock_vs),
+            }):
+                result = br.memory_lifecycle("test query")
+                assert result["query"] == "test query"
+                assert len(result["matches"]) == 1
+                assert result["matches"][0]["access_count"] == 3
+                assert result["matches"][0]["vitality"] == 0.75
+        finally:
+            bmod.tracker = old_tracker
+
+    def test_memory_lifecycle_no_results(self):
+        from second_brain.bridge import SecondBrainBridge
+        bmod = _get_bridge_mod()
+        br = SecondBrainBridge()
+
+        mock_vs = MagicMock()
+        mock_vs.search.return_value = []
+
+        with patch.dict("sys.modules", {
+            "memora.vectorstore": MagicMock(vector_store=mock_vs),
+        }):
+            result = br.memory_lifecycle("nothing here")
+            assert result["matches"] == []
+
+
+class TestBridgeListDormant:
+    def test_list_dormant(self):
+        from second_brain.bridge import SecondBrainBridge
+        bmod = _get_bridge_mod()
+        br = SecondBrainBridge()
+
+        pool = _make_pool(memora_count=3)
+        br._build_memory_pool = MagicMock(return_value=pool)
+
+        mock_tracker = MagicMock()
+        mock_tracker.find_dormant.return_value = [
+            {"content": "dormant memory 1", "importance": 0.8,
+             "dormant_days": 20, "_layer": "memora", "timestamp": "2026-01-01"},
+            {"content": "dormant memory 2", "importance": 0.9,
+             "dormant_days": 30, "_layer": "chronos", "timestamp": "2025-12-15"},
+        ]
+
+        old = bmod.tracker
+        bmod.tracker = mock_tracker
+        try:
+            result = br.list_dormant()
+            assert result["count"] == 2
+            assert len(result["memories"]) == 2
+            assert result["memories"][0]["dormant_days"] == 20
+        finally:
+            bmod.tracker = old
+
+    def test_list_dormant_empty(self):
+        from second_brain.bridge import SecondBrainBridge
+        bmod = _get_bridge_mod()
+        br = SecondBrainBridge()
+
+        pool = _make_pool(memora_count=1)
+        br._build_memory_pool = MagicMock(return_value=pool)
+
+        mock_tracker = MagicMock()
+        mock_tracker.find_dormant.return_value = []
+
+        old = bmod.tracker
+        bmod.tracker = mock_tracker
+        try:
+            result = br.list_dormant()
+            assert result["count"] == 0
+        finally:
+            bmod.tracker = old
+
+
+class TestFindRelatedInsights:
+    def test_find_related_insights(self, tmp_path):
+        from second_brain.bridge import SecondBrainBridge
+        bmod = _get_bridge_mod()
+        br = SecondBrainBridge()
+
+        old_config = bmod.config
+        mock_config = MagicMock()
+        mock_config.insights_path = tmp_path
+
+        (tmp_path / "2026-03-14.md").write_text(
+            "### 灵感碰撞\n**记忆 A**: test content here\n联系: cool idea")
+
+        bmod.config = mock_config
+        try:
+            result = br._find_related_insights("test content here")
+            assert len(result) == 1
+            assert result[0]["date"] == "2026-03-14"
+        finally:
+            bmod.config = old_config
+
+    def test_find_related_insights_no_match(self, tmp_path):
+        from second_brain.bridge import SecondBrainBridge
+        bmod = _get_bridge_mod()
+        br = SecondBrainBridge()
+
+        old_config = bmod.config
+        mock_config = MagicMock()
+        mock_config.insights_path = tmp_path
+
+        (tmp_path / "2026-03-14.md").write_text("### 灵感碰撞\nunrelated content")
+
+        bmod.config = mock_config
+        try:
+            result = br._find_related_insights("something else entirely")
+            assert len(result) == 0
+        finally:
+            bmod.config = old_config

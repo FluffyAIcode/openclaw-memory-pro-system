@@ -350,3 +350,64 @@ class TestMemoryHandler:
         time.sleep(0.3)
         memory_server._task_manager.cleanup(max_age=0)
         assert memory_server._task_manager.get(task_id) is None
+
+    def test_briefing_endpoint(self):
+        import memory_server
+        mock_bridge = MagicMock()
+        mock_bridge.daily_briefing.return_value = {
+            "text": "briefing text", "date": "2026-03-14",
+        }
+        with patch.dict(sys.modules, {
+            "second_brain": MagicMock(),
+            "second_brain.bridge": MagicMock(bridge=mock_bridge),
+        }):
+            handler, responses = self._make_handler("GET", "/briefing")
+            memory_server.MemoryHandler.do_GET(handler)
+            assert responses[0][0] == 200
+            assert responses[0][1]["text"] == "briefing text"
+
+    def test_vitality_endpoint(self):
+        import memory_server
+        mock_bridge = MagicMock()
+        mock_bridge.vitality_list.return_value = {
+            "total": 10, "distribution": {"high": 3, "medium": 5, "low": 2},
+        }
+        with patch.dict(sys.modules, {
+            "second_brain": MagicMock(),
+            "second_brain.bridge": MagicMock(bridge=mock_bridge),
+        }):
+            handler, responses = self._make_handler("GET", "/vitality")
+            memory_server.MemoryHandler.do_GET(handler)
+            assert responses[0][0] == 200
+            assert responses[0][1]["total"] == 10
+
+    def test_dormant_endpoint(self):
+        import memory_server
+        mock_bridge = MagicMock()
+        mock_bridge.list_dormant.return_value = {
+            "count": 2, "memories": [{"content": "old"}],
+        }
+        with patch.dict(sys.modules, {
+            "second_brain": MagicMock(),
+            "second_brain.bridge": MagicMock(bridge=mock_bridge),
+        }):
+            handler, responses = self._make_handler("GET", "/dormant")
+            memory_server.MemoryHandler.do_GET(handler)
+            assert responses[0][0] == 200
+            assert responses[0][1]["count"] == 2
+
+    def test_inspect_endpoint(self):
+        import memory_server
+        mock_bridge = MagicMock()
+        mock_bridge.memory_lifecycle.return_value = {
+            "query": "test", "matches": [{"content": "found"}],
+        }
+        with patch.dict(sys.modules, {
+            "second_brain": MagicMock(),
+            "second_brain.bridge": MagicMock(bridge=mock_bridge),
+        }):
+            body = json.dumps({"query": "test"}).encode()
+            handler, responses = self._make_handler("POST", "/inspect", body)
+            memory_server.MemoryHandler.do_POST(handler)
+            assert responses[0][0] == 200
+            assert len(responses[0][1]["matches"]) == 1

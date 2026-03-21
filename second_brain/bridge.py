@@ -125,6 +125,207 @@ class SecondBrainBridge:
             "recent_insights": recent_insights[:5],
         }
 
+    def daily_briefing(self) -> dict:
+        """Generate a human-readable daily briefing for the user.
+
+        Combines overnight insights, dormant memories, trends, and
+        vitality distribution into a structured report suitable for
+        pushing via Telegram or displaying in CLI.
+        """
+        pool = self._build_memory_pool()
+        all_entries = []
+        for layer, entries in pool.items():
+            for e in entries:
+                e["_layer"] = layer
+                all_entries.append(e)
+
+        recent_insights = self._load_recent_insights(days=1)
+        dormant = tracker.find_dormant(all_entries)
+        trends = tracker.find_trends()
+
+        vitality_buckets = {"high": [], "medium": [], "low": []}
+        for e in all_entries:
+            v = tracker.vitality(
+                importance=e.get("importance", e.get("metadata", {}).get("importance", 0.5)),
+                created_at=e.get("timestamp", ""),
+                content_hash=str(hash(e.get("content", ""))),
+            )
+            entry_info = {"content": e.get("content", "")[:100], "vitality": v,
+                          "layer": e.get("_layer", "?")}
+            if v >= 0.7:
+                vitality_buckets["high"].append(entry_info)
+            elif v >= 0.4:
+                vitality_buckets["medium"].append(entry_info)
+            else:
+                vitality_buckets["low"].append(entry_info)
+
+        sections = []
+
+        if recent_insights:
+            total_insights = sum(i.get("insight_count", 0) for i in recent_insights)
+            section = f"💡 昨夜灵感碰撞产生了 {total_insights} 条新发现"
+            for ins in recent_insights[:2]:
+                preview = ins.get("preview", "")
+                for line in preview.split("\n"):
+                    if line.strip().startswith("**记忆 A**") or line.strip().startswith("### 灵感"):
+                        continue
+                    if "联系发现" in line or "联系:" in line:
+                        section += f"\n  • {line.strip().lstrip('#').strip()[:120]}"
+                        break
+            sections.append(section)
+
+        if dormant:
+            section = f"🔇 {len(dormant)} 条重要记忆已沉睡超过 {config.dormancy_age_days} 天："
+            for d in dormant[:3]:
+                days = d.get("dormant_days", 0)
+                content = d.get("content", "")[:60]
+                section += f"\n  • ({days}天未访问) {content}"
+            section += "\n  → 回复「review-dormant」可查看完整列表"
+            sections.append(section)
+
+        if trends:
+            section = "📈 近 3 天你最关注的话题："
+            tags = []
+            for t in trends[:3]:
+                queries = t.get("queries", [])
+                label = queries[0] if queries else f"memory #{t.get('id', '?')[:8]}"
+                tags.append(f"{label} ({t['hits']}次)")
+            section += "、".join(tags)
+            sections.append(section)
+
+        total = len(all_entries)
+        high = len(vitality_buckets["high"])
+        low = len(vitality_buckets["low"])
+        section = f"🧠 记忆总量 {total} 条 | 高活力 {high} | 低活力 {low}"
+        sections.append(section)
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        text = f"☀️ {today} 记忆简报\n\n" + "\n\n".join(sections)
+
+        return {
+            "text": text,
+            "date": today,
+            "insight_count": sum(i.get("insight_count", 0) for i in recent_insights),
+            "dormant_count": len(dormant),
+            "trend_count": len(trends),
+            "vitality_distribution": {k: len(v) for k, v in vitality_buckets.items()},
+            "total_memories": total,
+        }
+
+    def vitality_list(self) -> dict:
+        """Return per-memory vitality scores with distribution."""
+        pool = self._build_memory_pool()
+        all_entries = []
+        for layer, entries in pool.items():
+            for e in entries:
+                e["_layer"] = layer
+                all_entries.append(e)
+
+        scored = []
+        for e in all_entries:
+            v = tracker.vitality(
+                importance=e.get("importance", e.get("metadata", {}).get("importance", 0.5)),
+                created_at=e.get("timestamp", ""),
+                content_hash=str(hash(e.get("content", ""))),
+            )
+            scored.append({
+                "content": e.get("content", "")[:120],
+                "vitality": v,
+                "layer": e.get("_layer", "?"),
+                "importance": e.get("importance", 0.5),
+                "timestamp": str(e.get("timestamp", ""))[:10],
+            })
+
+        scored.sort(key=lambda x: x["vitality"], reverse=True)
+
+        high = [s for s in scored if s["vitality"] >= 0.7]
+        medium = [s for s in scored if 0.4 <= s["vitality"] < 0.7]
+        low = [s for s in scored if s["vitality"] < 0.4]
+
+        return {
+            "total": len(scored),
+            "distribution": {"high": len(high), "medium": len(medium), "low": len(low)},
+            "top_active": scored[:5],
+            "nearly_dormant": [s for s in scored if s["vitality"] < 0.45][-5:],
+            "all": scored,
+        }
+
+    def memory_lifecycle(self, query: str) -> dict:
+        """Inspect memories matching a query — full lifecycle view."""
+        results = []
+        try:
+            from memora.vectorstore import vector_store
+            matches = vector_store.search(query, limit=5)
+            for m in matches:
+                content = m.get("content", "")
+                content_hash = str(hash(content))
+                hits = tracker._count_hits("", content_hash)
+                v = tracker.vitality(
+                    importance=m.get("metadata", {}).get("importance", 0.5),
+                    created_at=m.get("timestamp", ""),
+                    content_hash=content_hash,
+                )
+                last = tracker._last_access_time(content_hash)
+
+                related_insights = self._find_related_insights(content[:80])
+
+                results.append({
+                    "content": content[:300],
+                    "score": m.get("score", 0),
+                    "source": m.get("metadata", {}).get("source", "?"),
+                    "timestamp": m.get("timestamp", ""),
+                    "importance": m.get("metadata", {}).get("importance", 0.5),
+                    "vitality": v,
+                    "access_count": hits,
+                    "last_accessed": last.isoformat() if last else None,
+                    "related_insights": related_insights[:2],
+                })
+        except Exception as e:
+            logger.warning("memory_lifecycle search failed: %s", e)
+
+        return {"query": query, "matches": results}
+
+    def list_dormant(self) -> dict:
+        """Return all dormant memories with full detail."""
+        pool = self._build_memory_pool()
+        all_entries = []
+        for layer, entries in pool.items():
+            for e in entries:
+                e["_layer"] = layer
+                all_entries.append(e)
+
+        dormant = tracker.find_dormant(all_entries)
+        return {
+            "count": len(dormant),
+            "threshold_days": config.dormancy_age_days,
+            "threshold_importance": config.dormancy_importance_threshold,
+            "memories": [
+                {
+                    "content": d.get("content", "")[:200],
+                    "importance": d.get("importance", 0),
+                    "dormant_days": d.get("dormant_days", 0),
+                    "layer": d.get("_layer", "?"),
+                    "timestamp": str(d.get("timestamp", ""))[:10],
+                }
+                for d in dormant
+            ],
+        }
+
+    def _find_related_insights(self, content_snippet: str) -> List[dict]:
+        """Find insights that reference the given content."""
+        results = []
+        insights_dir = config.insights_path
+        if not insights_dir.exists():
+            return results
+        for f in sorted(insights_dir.glob("*.md"), reverse=True)[:5]:
+            try:
+                text = f.read_text(encoding="utf-8")
+                if content_snippet[:40] in text:
+                    results.append({"date": f.stem, "file": f.name})
+            except OSError:
+                continue
+        return results
+
     def status(self) -> dict:
         """Quick status check."""
         stats = tracker.stats()

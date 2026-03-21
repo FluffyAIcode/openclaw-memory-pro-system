@@ -10,33 +10,43 @@
 memory-cli health || memory-cli server-start
 ```
 
+### ☀️ 晨间简报推送（每天 1 次，早上首次心跳时）
+
+检查 `lastChecks.daily_briefing`。如果距离上次推送超过 20 小时，执行：
+
+```bash
+memory-cli briefing
+```
+
+将简报内容发送给用户（通过当前会话渠道）。简报包含：
+- 昨夜灵感碰撞结果
+- 沉睡记忆提醒
+- 近期趋势话题
+- 记忆活力概况
+
+然后更新 `lastChecks.daily_briefing` 时间戳。
+
 ### 🧠 Memora 记忆维护（每天一次）
 
-检查距离上次提炼是否已超过 24 小时。如果是，执行（现在会通过 LLM 生成 AI 摘要）：
+检查距离上次提炼是否已超过 24 小时。如果是，执行：
 
 ```bash
 memory-cli digest --days 7
 ```
 
-然后在 `memory/heartbeat-state.json` 中更新 `lastChecks.memora_digest` 为当前时间戳。
+然后更新 `lastChecks.memora_digest` 时间戳。
 
 ### ⚡ Chronos 记忆巩固（每 6 小时一次）
 
-检查距离上次巩固是否已超过 6 小时。如果是，执行（现在会同时生成 PERSONALITY.yaml 人格档案）：
+检查距离上次巩固是否已超过 6 小时。如果是，执行：
 
 ```bash
 python3 -m chronos consolidate
 ```
 
-然后在 `memory/heartbeat-state.json` 中更新 `lastChecks.chronos_consolidate` 为当前时间戳。
+然后更新 `lastChecks.chronos_consolidate` 时间戳。巩固完成后检查 `PERSONALITY.yaml` 是否已更新。
 
-巩固完成后检查 `PERSONALITY.yaml` 是否已更新：
-
-```bash
-ls -la PERSONALITY.yaml
-```
-
-### 🧠 第二大脑灵感碰撞（每 6 小时一次）
+### 🧠 第二大脑灵感碰撞 + 推送（每 6 小时一次）
 
 检查距离上次碰撞是否已超过 6 小时。如果是，执行：
 
@@ -44,15 +54,33 @@ ls -la PERSONALITY.yaml
 memory-cli collide
 ```
 
-然后在 `memory/heartbeat-state.json` 中更新 `lastChecks.second_brain_collide` 为当前时间戳。
+然后更新 `lastChecks.second_brain_collide` 时间戳。
 
-碰撞结果保存在 `memory/insights/YYYY-MM-DD.md`，高新颖度灵感自动索引到 Memora。
+**灵感推送规则：** 碰撞完成后，检查输出中是否有 novelty >= 4 的灵感。如果有，主动发送给用户：
 
-定期查看第二大脑报告，了解记忆健康状况：
+```
+💡 刚刚的灵感碰撞发现了一条高新颖度的联系：
+[策略名] 联系: ...
+灵感: ...
+```
+
+不需要等到晨间简报，有好灵感就立即分享。
+
+### 💤 沉睡记忆提醒（每 3 天一次）
+
+检查 `lastChecks.dormant_check`。如果距离上次超过 3 天，执行：
 
 ```bash
-memory-cli sb-report
+memory-cli review-dormant
 ```
+
+如果有沉睡记忆，挑选最重要的 1-2 条，以对话方式提醒用户：
+
+```
+你之前提到过 X（两周前），最近没有再讨论过。是否需要跟进？
+```
+
+然后更新 `lastChecks.dormant_check` 时间戳。
 
 ### 📝 日常检查（按 AGENTS.md 指引轮询）
 
