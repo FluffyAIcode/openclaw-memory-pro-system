@@ -1,0 +1,10 @@
+# MSA (Memory Sparse Attention) Configuration
+# Override with MSA_ environment variables
+
+top_k: 5
+chunk_size: 512
+chunk_overlap: 64
+max_interleave_rounds: 3
+similarity_threshold: 0.3
+embedding_model: "nomic-ai/nomic-embed-text-v1.5"
+embedding_dimension: 768

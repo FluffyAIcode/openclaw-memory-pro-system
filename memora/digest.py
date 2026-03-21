@@ -47,14 +47,39 @@ def digest_memories(days: int = 7) -> bool:
     now = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     digest_file = long_term_dir / f"digest_{now}.md"
 
+    combined_text = "\n\n".join(f"[{d}]\n{c}" for d, c in collected)
+
+    summary = None
+    try:
+        import llm_client
+        if llm_client.is_available():
+            logger.info("调用 LLM 生成记忆摘要...")
+            summary = llm_client.generate(
+                prompt=(
+                    f"以下是最近 {days} 天的记忆日志（共 {len(collected)} 天）。"
+                    "请提炼出：\n"
+                    "1. 关键决策和结论\n"
+                    "2. 重要发现和新知识\n"
+                    "3. 值得长期保留的用户偏好和模式\n"
+                    "4. 未完成的任务或待跟进事项\n\n"
+                    f"记忆日志：\n{combined_text[:8000]}"
+                ),
+                system="你是记忆提炼助手。生成简洁的结构化摘要，用中文。",
+                max_tokens=1500,
+            )
+    except ImportError:
+        pass
+
     with open(digest_file, "w", encoding="utf-8") as f:
         f.write(f"# 记忆提炼 — {now}\n\n")
         f.write(f"来源: 最近 {days} 天 ({len(collected)} 个文件)\n\n")
-        for date_str, content in collected:
-            f.write(f"## {date_str}\n\n{content}\n\n---\n\n")
-        # TODO: 接入 vLLM 生成摘要
-        # summary = call_vllm(config.vllm_url, combined_text)
-        # f.write(f"## AI 摘要\n\n{summary}\n")
 
-    logger.info("提炼完成 → %s", digest_file)
+        if summary:
+            f.write(f"## AI 摘要\n\n{summary}\n\n---\n\n")
+
+        f.write("## 原始记录\n\n")
+        for date_str, content in collected:
+            f.write(f"### {date_str}\n\n{content}\n\n---\n\n")
+
+    logger.info("提炼完成 → %s (AI摘要: %s)", digest_file, "有" if summary else "无")
     return True

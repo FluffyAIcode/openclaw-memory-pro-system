@@ -1,6 +1,6 @@
 ---
 name: memora
-description: "增强型记忆管理。使用场景: (1) 保存重要对话/决策到长期记忆, (2) 搜索历史记忆获取上下文, (3) 执行记忆提炼生成长期摘要, (4) 查看记忆系统状态。NOT for: 普通的 memory/ 日文件读写(直接用文件操作)。"
+description: "增强型记忆管理。使用场景: (1) 保存重要对话/决策到长期记忆, (2) 搜索历史记忆获取上下文, (3) 执行记忆提炼生成长期摘要(现接入LLM), (4) 查看记忆系统状态。NOT for: 普通的 memory/ 日文件读写(直接用文件操作)。"
 metadata:
   openclaw:
     emoji: "🧠"
@@ -12,62 +12,51 @@ metadata:
 
 Memora 是你的高级记忆层，与 OpenClaw 原生 `memory/` 目录双写同步。它提供向量语义搜索、自动提炼、长期记忆管理等原生记忆系统不具备的能力。
 
+## v2.0 更新
+
+- **Memory Server 加速**: 通过常驻服务，响应从 10-30s 降到 <100ms
+- **LLM 驱动摘要**: `digest` 现在调用 xAI Grok 生成 AI 摘要，而非简单拼接
+- **共享嵌入模型**: Memora 和 MSA 共用同一个 SentenceTransformer，节省内存
+
 ## 核心能力
 
 | 能力 | 说明 |
 |------|------|
 | **双写保存** | 同时写入 Memora 向量库 + OpenClaw memory/ 目录 |
 | **语义搜索** | 基于向量相似度搜索历史记忆，比关键词匹配更智能 |
-| **记忆提炼** | 读取近期 daily 记录，合并生成长期摘要 |
+| **LLM 记忆提炼** | 读取近期 daily 记录，通过 LLM 生成结构化长期摘要 |
 | **系统状态** | 查看向量条目数、存储路径、配置信息 |
 
 ## 使用方法
 
-所有命令通过 `bash` 工具执行，工作目录为 `~/.openclaw/workspace`。
+### 推荐：通过 Memory Server（快速）
 
-### 保存重要记忆
-
-当对话中出现值得长期保存的内容（重要决策、关键发现、用户偏好等），使用双写保存：
+确保服务在运行（`memory-cli health`），然后：
 
 ```bash
-python3 -m memora add "用户决定使用 xAI Grok 作为主要 LLM" -i 0.9 -s openclaw
+# 语义搜索
+memory-cli search "用户的 LLM 偏好"
+
+# 保存记忆
+memory-cli add "用户决定使用 xAI Grok 作为主要 LLM" -i 0.9 -s openclaw
+
+# 智能路由保存（自动分发到 Memora/MSA/Chronos）
+memory-cli remember "重要内容" -i 0.8
+
+# 记忆提炼（现在带 AI 摘要）
+memory-cli digest --days 7
+
+# 查看状态
+memory-cli status
 ```
 
-参数说明：
-- 第一个参数：记忆内容（引号包裹）
-- `-i`：重要性 0.0-1.0（默认 0.7，重要决策建议 0.8-1.0）
-- `-s`：来源标记（默认 cli，推荐用 openclaw/telegram/user 等标注来源）
-
-### 搜索历史记忆
-
-需要回忆过去的上下文时，用语义搜索：
+### 备选：直接 CLI（较慢，每次加载模型）
 
 ```bash
-python3 -m memora search "用户的 LLM 偏好"
-```
-
-结果按相似度得分排序，score 越高越相关。
-
-### 执行记忆提炼
-
-定期（建议每周一次或在 heartbeat 中触发）将近期 daily 记录提炼为长期摘要：
-
-```bash
+python3 -m memora search "关键词"
+python3 -m memora add "内容" -i 0.9 -s openclaw
 python3 -m memora digest --days 7
-```
-
-提炼结果写入 `memory/long_term/digest_*.md`。
-
-### 查看系统状态
-
-```bash
 python3 -m memora status
-```
-
-### 初始化（首次或目录丢失时）
-
-```bash
-python3 -m memora init
 ```
 
 ## 何时使用 Memora

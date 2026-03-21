@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""
+memory-cli — Thin HTTP client for the Memory Server.
+
+No heavy dependencies (no SentenceTransformer, no numpy at import time).
+Just sends JSON requests to localhost:18790 and prints results.
+
+Usage:
+    memory-cli remember "content" [-i 0.8] [-s source]
+    memory-cli recall "query" [-k 8]
+    memory-cli deep-recall "query" [-r 3]
+    memory-cli search "query" [-k 8]
+    memory-cli add "content" [-i 0.8] [-s source]
+    memory-cli digest [--days 7]
+    memory-cli status
+    memory-cli health
+    memory-cli server-start
+    memory-cli server-stop
+"""
+
+import argparse
+import json
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+_BASE_URL = "http://127.0.0.1:18790"
+_WORKSPACE = Path(__file__).parent
+
+
+def _post(path: str, data: dict, timeout: int = 120) -> dict:
+    body = json.dumps(data).encode("utf-8")
+    req = Request(
+        f"{_BASE_URL}{path}",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except URLError as e:
+        print(f"Error: Memory Server not reachable ({e})", file=sys.stderr)
+        print("Start it with: memory-cli server-start", file=sys.stderr)
+        sys.exit(1)
+
+
+def _get(path: str, timeout: int = 30) -> dict:
+    req = Request(f"{_BASE_URL}{path}", method="GET")
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except URLError as e:
+        print(f"Error: Memory Server not reachable ({e})", file=sys.stderr)
+        print("Start it with: memory-cli server-start", file=sys.stderr)
+        sys.exit(1)
+
+
+def _post_async(path: str, data: dict, label: str = "") -> dict:
+    """Submit a slow request asynchronously and poll until done."""
+    import time as _time
+
+    data["async"] = True
+    resp = _post(path, data, timeout=10)
+
+    task_id = resp.get("task_id")
+    if not task_id:
+        return resp
+
+    tag = label or path
+    _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    idx = 0
+    poll_interval = 2.0
+
+    while True:
+        _time.sleep(poll_interval)
+        task = _get(f"/task/{task_id}", timeout=10)
+        status = task.get("status", "unknown")
+        elapsed = task.get("elapsed", 0)
+
+        frame = _SPINNER[idx % len(_SPINNER)]
+        sys.stdout.write(f"\r{frame} {tag} ... {elapsed:.0f}s [{status}]   ")
+        sys.stdout.flush()
+        idx += 1
+
+        if status == "done":
+            sys.stdout.write(f"\r✓ {tag} 完成 ({elapsed:.0f}s)            \n")
+            sys.stdout.flush()
+            return task.get("result", {})
+        elif status == "error":
+            sys.stdout.write(f"\r✗ {tag} 失败 ({elapsed:.0f}s)            \n")
+            sys.stdout.flush()
+            print(f"  Error: {task.get('error', 'unknown')}", file=sys.stderr)
+            sys.exit(1)
+
+        if poll_interval < 5.0:
+            poll_interval = min(poll_interval + 0.5, 5.0)
+
+
+def cmd_remember(args):
+    result = _post("/remember", {
+        "content": args.content,
+        "source": args.source,
+        "importance": args.importance,
+        "doc_id": args.doc_id,
+        "title": args.title,
+    })
+    systems = result.get("systems_used", [])
+    print(f"Remembered ({result.get('word_count', '?')} words) via: {', '.join(systems)}")
+
+
+def cmd_recall(args):
+    result = _post("/recall", {"query": args.query, "top_k": args.top_k})
+    merged = result.get("merged", [])
+    if not merged:
+        print("No results found.")
+        return
+    for i, r in enumerate(merged, 1):
+        sys_tag = r.get("system", r.get("metadata", {}).get("source", "?"))
+        score = r.get("score", 0)
+        content = r.get("content", "")[:200]
+        print(f"  [{i}] (score={score:.4f}, system={sys_tag})")
+        print(f"      {content}")
+        print()
+
+
+def cmd_deep_recall(args):
+    result = _post_async("/deep-recall", {"query": args.query, "max_rounds": args.max_rounds},
+                         label="深度召回")
+    interleave = result.get("interleave")
+    if interleave:
+        print(f"Multi-hop reasoning: {interleave.get('rounds', '?')} rounds, "
+              f"{interleave.get('total_docs_used', '?')} documents used")
+        answer = interleave.get("final_answer", "")
+        if answer:
+            print(f"\n{answer[:2000]}")
+    else:
+        print("MSA interleave not available.")
+
+    ctx = result.get("memora_context", [])
+    if ctx:
+        print(f"\n--- Memora context ({len(ctx)} snippets) ---")
+        for r in ctx[:3]:
+            print(f"  [{r.get('score', 0):.4f}] {r.get('content', '')[:150]}")
+
+
+def cmd_search(args):
+    result = _post("/search", {"query": args.query, "limit": args.top_k})
+    entries = result.get("results", [])
+    if not entries:
+        print("No results found.")
+        return
+    for i, r in enumerate(entries, 1):
+        print(f"  [{i}] (score={r.get('score', 0):.4f}) {r.get('content', '')[:200]}")
+
+
+def cmd_add(args):
+    result = _post("/add", {
+        "content": args.content,
+        "source": args.source,
+        "importance": args.importance,
+    })
+    print(f"Added: {result.get('timestamp', '?')} [{result.get('source', '?')}]")
+
+
+def cmd_digest(args):
+    result = _post_async("/digest", {"days": args.days}, label="记忆提炼")
+    if result.get("success"):
+        print(f"Digest complete (last {args.days} days)")
+    else:
+        print("Digest failed")
+
+
+def cmd_status(args):
+    result = _get("/status")
+    server = result.get("server", {})
+    print(f"Memory Server: uptime={server.get('uptime_seconds', '?')}s, "
+          f"embedder={server.get('embedder', '?')}")
+    print()
+    for name, info in result.get("systems", {}).items():
+        if isinstance(info, dict) and "error" not in info:
+            print(f"  {name}: {json.dumps(info, ensure_ascii=False)}")
+        elif isinstance(info, dict):
+            print(f"  {name}: ERROR — {info.get('error', '?')}")
+        else:
+            print(f"  {name}: {info}")
+
+
+def cmd_health(args):
+    result = _get("/health")
+    status = result.get("status", "unknown")
+    uptime = result.get("uptime_seconds", "?")
+    embedder = result.get("embedder", "?")
+    pid = result.get("pid", "?")
+    print(f"Status: {status} | PID: {pid} | Uptime: {uptime}s | Embedder: {embedder}")
+
+
+def cmd_server_start(args):
+    pid_file = _WORKSPACE / "memory" / "server.pid"
+    if pid_file.exists():
+        pid = pid_file.read_text().strip()
+        try:
+            os.kill(int(pid), 0)
+            print(f"Memory Server already running (PID {pid})")
+            return
+        except (OSError, ValueError):
+            pid_file.unlink()
+
+    server_path = _WORKSPACE / "memory_server.py"
+    proc = subprocess.Popen(
+        [sys.executable, str(server_path), "--daemon"],
+        cwd=str(_WORKSPACE),
+    )
+    proc.wait()
+    print("Memory Server starting... use 'memory-cli health' to check.")
+
+
+def cmd_collide(args):
+    result = _post_async("/second-brain/collide", {}, label="灵感碰撞")
+    insights = result.get("insights", [])
+    msg = result.get("message", "")
+    print(msg)
+    for i, ins in enumerate(insights, 1):
+        print(f"\n  [{i}] [{ins.get('strategy', '?')}] 新颖度={ins.get('novelty', 0)}")
+        print(f"      联系: {ins.get('connection', '')[:150]}")
+        print(f"      灵感: {ins.get('ideas', '')[:150]}")
+
+
+def cmd_deep_collide(args):
+    result = _post_async("/second-brain/deep-collide",
+                         {"topic": args.topic if hasattr(args, 'topic') else ""},
+                         label="深度碰撞")
+    answer = result.get("answer")
+    if answer:
+        print(f"深度碰撞 ({result.get('docs_used', 0)} 篇文档, {result.get('rounds', 0)} 轮推理):")
+        print(f"\n{answer[:2000]}")
+    else:
+        print(result.get("message", "深度碰撞未产生结果"))
+
+
+def cmd_sb_report(args):
+    result = _get("/second-brain/report")
+    print(f"追踪统计: 总访问 {result.get('tracker_stats', {}).get('total_accesses', 0)} 次, "
+          f"独立记忆 {result.get('tracker_stats', {}).get('unique_memories', 0)} 条")
+    print(f"平均活力值: {result.get('avg_vitality', 0):.4f} (样本 {result.get('vitality_sample_size', 0)})")
+    print(f"沉睡记忆: {result.get('dormant_count', 0)} 条")
+    dormant = result.get("dormant_top3", [])
+    for d in dormant:
+        print(f"  - [{d.get('dormant_days', '?')}天未访问] (重要性={d.get('importance', 0):.2f}) "
+              f"{d.get('content', '')[:80]}")
+    trends = result.get("trending", [])
+    if trends:
+        print(f"近期趋势 (最近{3}天):")
+        for t in trends:
+            print(f"  - 命中 {t.get('hits', 0)} 次: {', '.join(t.get('queries', [])[:3])}")
+    rins = result.get("recent_insights", [])
+    if rins:
+        print(f"最近灵感: {result.get('recent_insights_count', 0)} 条")
+        for r in rins:
+            print(f"  - {r.get('date', '?')}: {r.get('insight_count', 0)} 条碰撞")
+
+
+def cmd_sb_status(args):
+    result = _get("/second-brain/status")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_tasks(args):
+    result = _get("/tasks")
+    tasks = result.get("tasks", [])
+    if not tasks:
+        print("No active tasks.")
+        return
+    for t in tasks:
+        status = t.get("status", "?")
+        name = t.get("name", "?")
+        elapsed = t.get("elapsed", 0)
+        tid = t.get("id", "?")
+        icon = {"running": "⟳", "done": "✓", "error": "✗"}.get(status, "?")
+        print(f"  {icon} [{tid}] {name} — {status} ({elapsed:.0f}s)")
+        if status == "error":
+            print(f"    Error: {t.get('error', '')[:100]}")
+
+
+def cmd_server_stop(args):
+    pid_file = _WORKSPACE / "memory" / "server.pid"
+    if not pid_file.exists():
+        print("Memory Server not running (no PID file)")
+        return
+    pid = int(pid_file.read_text().strip())
+    try:
+        os.kill(pid, signal.SIGTERM)
+        print(f"Memory Server stopped (PID {pid})")
+    except OSError:
+        print(f"Process {pid} not found, cleaning up PID file")
+    if pid_file.exists():
+        pid_file.unlink()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="memory-cli",
+        description="Thin client for OpenClaw Memory Server",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("remember", help="Smart ingestion via Memory Hub")
+    p.add_argument("content", help="Text to remember")
+    p.add_argument("-i", "--importance", type=float, default=0.7)
+    p.add_argument("-s", "--source", default="openclaw")
+    p.add_argument("-d", "--doc-id", default=None)
+    p.add_argument("-t", "--title", default=None)
+    p.set_defaults(func=cmd_remember)
+
+    p = sub.add_parser("recall", help="Merged search across all systems")
+    p.add_argument("query", help="Search query")
+    p.add_argument("-k", "--top-k", type=int, default=8)
+    p.set_defaults(func=cmd_recall)
+
+    p = sub.add_parser("deep-recall", help="MSA multi-hop reasoning")
+    p.add_argument("query", help="Complex question")
+    p.add_argument("-r", "--max-rounds", type=int, default=3)
+    p.set_defaults(func=cmd_deep_recall)
+
+    p = sub.add_parser("search", help="Memora vector search only")
+    p.add_argument("query", help="Search query")
+    p.add_argument("-k", "--top-k", type=int, default=8)
+    p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("add", help="Add to Memora vector store")
+    p.add_argument("content", help="Text to add")
+    p.add_argument("-i", "--importance", type=float, default=0.7)
+    p.add_argument("-s", "--source", default="cli")
+    p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser("digest", help="Run memory digest")
+    p.add_argument("--days", type=int, default=7)
+    p.set_defaults(func=cmd_digest)
+
+    p = sub.add_parser("status", help="All systems status")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("health", help="Server health check")
+    p.set_defaults(func=cmd_health)
+
+    p = sub.add_parser("collide", help="Run one round of inspiration collisions")
+    p.set_defaults(func=cmd_collide)
+
+    p = sub.add_parser("deep-collide", help="MSA multi-hop deep inspiration")
+    p.add_argument("topic", nargs="?", default="", help="Optional focus topic")
+    p.set_defaults(func=cmd_deep_collide)
+
+    p = sub.add_parser("sb-report", help="Second Brain comprehensive report")
+    p.set_defaults(func=cmd_sb_report)
+
+    p = sub.add_parser("sb-status", help="Second Brain quick status")
+    p.set_defaults(func=cmd_sb_status)
+
+    p = sub.add_parser("tasks", help="List async tasks")
+    p.set_defaults(func=cmd_tasks)
+
+    p = sub.add_parser("server-start", help="Start the Memory Server")
+    p.set_defaults(func=cmd_server_start)
+
+    p = sub.add_parser("server-stop", help="Stop the Memory Server")
+    p.set_defaults(func=cmd_server_stop)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

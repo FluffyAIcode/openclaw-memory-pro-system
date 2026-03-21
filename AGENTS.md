@@ -14,16 +14,31 @@ Before doing anything else:
 2. Read `USER.md` — this is who you're helping
 3. Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context
 4. **If in MAIN SESSION** (direct chat with your human): Also read `MEMORY.md`
+5. Read `PERSONALITY.yaml` if it exists — your evolved personality from Chronos consolidation
 
 Don't ask permission. Just do it.
 
 ## Memory
 
+**Logging Policy (Updated 2026-03-20):** All chat records must be fully logged without filtering. Every user message and assistant response shall be written to `memory/YYYY-MM-DD.md` in real time.
+
 You wake up fresh each session. These files are your continuity:
 
-- **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) — raw logs of what happened
+- **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) — raw logs of what happened (full record, no filtering)
 - **Long-term:** `MEMORY.md` — your curated memories, like a human's long-term memory
-- **Memora 增强记忆:** 用 `python3 -m memora search "关键词"` 语义搜索历史记忆；用 `python3 -m memora add "内容" -i 0.9` 双写保存重要记忆到向量库+日文件。详见 `skills/memora/SKILL.md`。
+- **Memory Server（推荐）:** 记忆系统现在有一个常驻 HTTP 服务，模型只加载一次，响应 <100ms。用 `memory-cli` 命令代替 `python3 -m`：
+  - `memory-cli remember "内容" -i 0.8` — 自动路由到 Memora/MSA/Chronos
+  - `memory-cli recall "问题"` — 跨系统合并搜索
+  - `memory-cli deep-recall "复杂问题"` — MSA 多跳推理（现在接入 LLM 生成）
+  - `memory-cli search "关键词"` — Memora 语义搜索
+  - `memory-cli status` — 查看所有系统状态
+  - `memory-cli health` — 检查服务器状态
+  - 如果服务没启动：`memory-cli server-start`
+- **Memora 增强记忆:** 语义搜索历史记忆。`memory-cli search "关键词"` 或 `memory-cli add "内容" -i 0.9`。详见 `skills/memora/SKILL.md`。
+- **Chronos 持续学习:** 将核心知识内化，并在巩固时生成 `PERSONALITY.yaml` 人格档案（通过 LLM 从高重要性记忆中提炼）。巩固命令：`python3 -m chronos consolidate`。详见 `skills/chronos/SKILL.md`。
+- **MSA 稀疏注意力记忆:** 文档级路由检索 + 多跳推理（现已接入 LLM）。`memory-cli deep-recall "复杂问题"`。详见 `skills/msa/SKILL.md`。
+- **第二大脑（记忆追踪 + 灵感碰撞）:** 自动追踪记忆访问模式，检测沉睡记忆和趋势，定期碰撞不同记忆产生灵感。`memory-cli collide` 执行碰撞，`memory-cli sb-report` 查看报告。详见 `skills/second-brain/SKILL.md`。
+- **直接 CLI（无需 Server 也可用）:** `python3 -m memora/chronos/msa/second_brain` 命令仍然有效，但启动较慢（每次加载模型 10-30s）。推荐用 memory-cli。
 
 Capture what matters. Decisions, context, things to remember. Skip the secrets unless asked to keep them.
 

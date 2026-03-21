@@ -9,7 +9,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _PACKAGE_DIR = Path(__file__).parent
-_DEFAULT_BASE = Path(os.environ.get("MEMORA_BASE_DIR", ""))
+_config_cache: Optional["MemoraConfig"] = None
 
 
 def _resolve_base() -> Path:
@@ -72,6 +72,10 @@ class MemoraConfig(BaseSettings):
 
 
 def load_config() -> MemoraConfig:
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
+
     config_path = _PACKAGE_DIR / "config.yaml"
     if config_path.exists():
         with open(config_path, "r", encoding="utf-8") as f:
@@ -80,4 +84,5 @@ def load_config() -> MemoraConfig:
     else:
         cfg = MemoraConfig()
     cfg.ensure_dirs()
+    _config_cache = cfg
     return cfg

@@ -4,7 +4,29 @@ __pycache__/
 dist/
 build/
 .eggs/
+.pytest_cache/
+.coverage
+
+# Runtime memory data
 memory/vector_db/
 memory/long_term/
 memory/raw/
+memory/chronos/
+memory/msa/
+memory/tracker/
+memory/insights/
+memory/daily/
+memory/*.md
+memory/heartbeat-state.json
+memory/server.pid
+memory/server-stdout.log
+memory/server-stderr.log
 *.log
+
+# Generated at runtime
+PERSONALITY.yaml
+MEMORY.md
+
+# Unrelated project files
+Joey_*.md
+Joey_*.scad

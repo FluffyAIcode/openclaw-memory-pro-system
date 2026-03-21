@@ -1,0 +1,11 @@
+vitality_half_life_days: 30.0
+dormancy_importance_threshold: 0.7
+dormancy_age_days: 14
+trend_window_days: 3
+trend_top_k: 5
+collision_interval_hours: 6.0
+collisions_per_round: 3
+semantic_bridge_low: 0.35
+semantic_bridge_high: 0.65
+insight_novelty_threshold: 4
+max_search_candidates: 20

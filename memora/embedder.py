@@ -1,6 +1,6 @@
 """
-文本嵌入器 — 当前为 mock 实现，返回固定维度的哈希向量。
-接入真实模型时替换 MockEmbedder 为 SentenceTransformerEmbedder。
+文本嵌入器 — 优先使用共享 embedder（Memory Server 注入），
+其次 SentenceTransformer，最后回退到 MockEmbedder。
 """
 
 import hashlib
@@ -15,10 +15,7 @@ config = load_config()
 
 
 class MockEmbedder:
-    """基于哈希的伪向量，仅供结构测试。
-    相同文本会产生相同向量，不同文本向量不同，
-    比固定 [0.1]*768 有意义得多。
-    """
+    """基于哈希的伪向量，仅当 SentenceTransformer 不可用时使用。"""
 
     def __init__(self, dimension: int = None):
         self.dimension = dimension or config.embedding_dimension
@@ -36,13 +33,62 @@ class MockEmbedder:
         return raw[:self.dimension]
 
 
-# TODO: 接入真实模型时取消注释并替换
-# class SentenceTransformerEmbedder:
-#     def __init__(self):
-#         from sentence_transformers import SentenceTransformer
-#         self.model = SentenceTransformer(config.embedding_model)
-#
-#     def embed(self, text: str) -> List[float]:
-#         return self.model.encode(text).tolist()
+class SentenceTransformerEmbedder:
+    """真实嵌入模型，lazy-load 避免启动时阻塞。"""
 
-embedder = MockEmbedder()
+    def __init__(self, model_name: str = None, dimension: int = None):
+        self.model_name = model_name or config.embedding_model
+        self.dimension = dimension or config.embedding_dimension
+        self._model = None
+
+    def _load(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(self.model_name, trust_remote_code=True)
+            logger.info("Loaded SentenceTransformer: %s", self.model_name)
+
+    def embed(self, text: str) -> List[float]:
+        self._load()
+        return self._model.encode(text, normalize_embeddings=True).tolist()
+
+
+def _create_embedder():
+    try:
+        import shared_embedder
+        shared = shared_embedder.get()
+        if shared is not None:
+            logger.info("Using shared embedder from Memory Server")
+            return shared
+    except ImportError:
+        pass
+
+    try:
+        emb = SentenceTransformerEmbedder()
+        emb._load()
+        return emb
+    except Exception as e:
+        logger.warning("SentenceTransformer unavailable (%s), using MockEmbedder", e)
+        return MockEmbedder()
+
+
+class _EmbedderProxy:
+    """Lazy proxy — delays embedder creation until first use.
+    Allows the Memory Server to inject a shared embedder before
+    any embed() call happens.
+    """
+    _instance = None
+
+    def _get(self):
+        if self._instance is None:
+            self._instance = _create_embedder()
+        return self._instance
+
+    def embed(self, text: str) -> List[float]:
+        return self._get().embed(text)
+
+    @property
+    def dimension(self):
+        return self._get().dimension
+
+
+embedder = _EmbedderProxy()

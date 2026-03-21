@@ -1,0 +1,7 @@
+max_buffer_size: 2000
+importance_threshold: 0.6
+consolidation_interval_hours: 6
+ewc_lambda: 5000.0
+max_lora_adapters: 32
+lora_rank: 8
+base_model_name: "Qwen/Qwen2.5-7B"
