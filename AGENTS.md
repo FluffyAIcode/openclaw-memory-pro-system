@@ -12,12 +12,21 @@ Before doing anything else:
 
 1. Read `SOUL.md` — this is who you are
 2. Read `USER.md` — this is who you're helping
-3. Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context
-4. **If in MAIN SESSION** (direct chat with your human): Also read `MEMORY.md`
-5. Read `PERSONALITY.yaml` if it exists — your evolved personality from Chronos consolidation
-6. **记忆预加载（主会话）**：运行 `memory-cli briefing` 获取今日简报，了解沉睡记忆、趋势话题、最近灵感。如果用户昨天讨论过某个话题，用 `memory-cli recall "话题关键词"` 预加载上下文，这样你可以主动接续上次对话（例如："上次你提到X，后来进展如何？"）
+3. **[必须] 运行 `memory-cli session-context`**。这是你的记忆预加载——上次对话摘要、活跃思维线索、近期关注、待解决矛盾、人格特质、沉睡提醒、里程碑。用这些信息自然地接续上次对话。
+4. Read `PERSONALITY.yaml` if it exists — your evolved personality from Chronos consolidation
+5. **If in MAIN SESSION** (direct chat with your human): Also read `MEMORY.md`
 
 Don't ask permission. Just do it.
+
+### 会话结束时
+
+在每次对话结束前（用户说再见、要离开、或长时间不回复时），运行：
+
+```bash
+memory-cli bookmark "一句话总结本次对话的核心内容" -t "话题1,话题2"
+```
+
+这确保下次 `session-context` 能正确显示上次对话的内容。
 
 ## Memory
 

@@ -1,5 +1,7 @@
 # HEARTBEAT.md
 
+> **注意：** Memory Server 内置了 Scheduler 和 AutoIngestor，以下大部分任务会自动执行并通过 Telegram 推送结果。心跳时只需检查 Server 健康状态即可。
+
 ## 定期任务
 
 ### 🖥️ Memory Server 健康检查（每次心跳）
@@ -9,6 +11,8 @@
 ```bash
 memory-cli health || memory-cli server-start
 ```
+
+Server 会自动执行：晨间简报推送、灵感碰撞、Chronos巩固、Digest、沉睡记忆提醒、KG矛盾扫描、盲区扫描、对话自动采集。
 
 ### ☀️ 晨间简报推送（每天 1 次，早上首次心跳时）
 

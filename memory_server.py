@@ -24,7 +24,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -150,6 +150,418 @@ def _get_hub():
     return _hub
 
 
+# ── Telegram Pusher ───────────────────────────────────────────
+
+class TelegramPusher:
+    """Sends messages to the user's Telegram via OpenClaw's bot."""
+
+    def __init__(self):
+        self._token: Optional[str] = None
+        self._chat_id: Optional[str] = None
+        self._loaded = False
+
+    def _load_config(self):
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            oc_json = Path.home() / ".openclaw" / "openclaw.json"
+            if oc_json.exists():
+                data = json.loads(oc_json.read_text(encoding="utf-8"))
+                tg = data.get("channels", {}).get("telegram", {})
+                if not tg:
+                    tg = data.get("telegram", {})
+                self._token = tg.get("botToken")
+
+            allow_from = Path.home() / ".openclaw" / "credentials" / "telegram-default-allowFrom.json"
+            if allow_from.exists():
+                ids = json.loads(allow_from.read_text(encoding="utf-8"))
+                chat_ids = ids.get("allowFrom", ids) if isinstance(ids, dict) else ids
+                if isinstance(chat_ids, list) and chat_ids:
+                    self._chat_id = str(chat_ids[0])
+        except Exception as e:
+            logger.warning("TelegramPusher config load failed: %s", e)
+
+    def push(self, text: str, parse_mode: str = "Markdown") -> bool:
+        self._load_config()
+        if not self._token or not self._chat_id:
+            logger.debug("Telegram push skipped: no token or chat_id")
+            return False
+        try:
+            from urllib.request import Request, urlopen
+            url = f"https://api.telegram.org/bot{self._token}/sendMessage"
+            payload = json.dumps({
+                "chat_id": self._chat_id,
+                "text": text[:4000],
+                "parse_mode": parse_mode,
+            }).encode("utf-8")
+            req = Request(url, data=payload, headers={"Content-Type": "application/json"})
+            with urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read())
+                if result.get("ok"):
+                    logger.info("Telegram push OK (msg_id=%s)", result["result"]["message_id"])
+                    return True
+                logger.warning("Telegram API error: %s", result)
+                return False
+        except Exception as e:
+            logger.warning("Telegram push failed: %s", e)
+            return False
+
+
+_telegram = TelegramPusher()
+
+
+# ── Auto-Ingestor ─────────────────────────────────────────────
+
+class AutoIngestor:
+    """Background thread that watches daily .md files and auto-ingests new content."""
+
+    _STATE_FILE = "memory/ingestion_state.json"
+    _INTERVAL = 1800  # 30 minutes
+
+    def __init__(self):
+        self._state_path = _WORKSPACE / self._STATE_FILE
+        self._state: Dict[str, int] = {}
+        self._load_state()
+
+    def _load_state(self):
+        try:
+            if self._state_path.exists():
+                self._state = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except Exception:
+            self._state = {}
+
+    def _save_state(self):
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(
+                json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.warning("AutoIngestor: failed to save state: %s", e)
+
+    def scan_and_ingest(self):
+        memory_dir = _WORKSPACE / "memory"
+        if not memory_dir.exists():
+            return
+
+        import re
+        md_files = sorted(memory_dir.glob("20??-??-??.md"))
+        total_ingested = 0
+
+        for md_file in md_files:
+            fname = md_file.name
+            try:
+                lines = md_file.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+
+            processed_up_to = self._state.get(fname, 0)
+            if len(lines) <= processed_up_to:
+                continue
+
+            new_lines = lines[processed_up_to:]
+            paragraphs = self._split_paragraphs(new_lines)
+
+            for para in paragraphs:
+                text = para.strip()
+                if len(text) < 15:
+                    continue
+                if self._is_test_content(text):
+                    continue
+                try:
+                    hub = _get_hub()
+                    hub.remember(
+                        content=text,
+                        source="auto_ingest",
+                        importance=0.6,
+                    )
+                    _kg_extract_async(text, 0.6)
+                    total_ingested += 1
+                except Exception as e:
+                    logger.warning("AutoIngestor: ingest failed: %s", e)
+
+            self._state[fname] = len(lines)
+
+        if total_ingested > 0:
+            logger.info("AutoIngestor: ingested %d new paragraphs", total_ingested)
+        self._save_state()
+
+    def _split_paragraphs(self, lines: list) -> list:
+        """Split lines into paragraphs using ### HH:MM:SS headers as delimiters."""
+        import re
+        paragraphs = []
+        current = []
+        for line in lines:
+            if re.match(r'^###\s+\d{2}:\d{2}:\d{2}', line):
+                if current:
+                    paragraphs.append("\n".join(current))
+                current = []
+            else:
+                if line.strip():
+                    current.append(line)
+        if current:
+            paragraphs.append("\n".join(current))
+        return paragraphs
+
+    def _is_test_content(self, text: str) -> bool:
+        lower = text.lower()
+        test_markers = [
+            "test", "测试", "[chronos/test]", "[hub/test]",
+            "test content", "test query",
+        ]
+        if len(text) < 30 and any(m in lower for m in test_markers):
+            return True
+        return False
+
+    def start(self):
+        def _loop():
+            while True:
+                try:
+                    self.scan_and_ingest()
+                except Exception as e:
+                    logger.error("AutoIngestor error: %s", e, exc_info=True)
+                time.sleep(self._INTERVAL)
+        t = threading.Thread(target=_loop, daemon=True, name="auto-ingestor")
+        t.start()
+        logger.info("AutoIngestor started (interval=%ds)", self._INTERVAL)
+
+
+# ── Scheduler ─────────────────────────────────────────────────
+
+class Scheduler:
+    """Built-in periodic task scheduler with Telegram push capability."""
+
+    _STATE_FILE = "memory/scheduler_state.json"
+
+    def __init__(self, pusher: TelegramPusher):
+        self._pusher = pusher
+        self._state_path = _WORKSPACE / self._STATE_FILE
+        self._state: Dict[str, float] = {}
+        self._load_state()
+        self._tasks = {
+            "morning_briefing": {
+                "interval": 86400,
+                "hour": 8,
+                "fn": self._task_morning_briefing,
+            },
+            "collision": {
+                "interval": 21600,
+                "fn": self._task_collision,
+            },
+            "chronos_consolidate": {
+                "interval": 21600,
+                "fn": self._task_consolidate,
+            },
+            "digest": {
+                "interval": 86400,
+                "fn": self._task_digest,
+            },
+            "dormant_check": {
+                "interval": 259200,
+                "fn": self._task_dormant_check,
+            },
+            "kg_contradiction_scan": {
+                "interval": 86400,
+                "fn": self._task_contradiction_scan,
+            },
+            "blindspot_scan": {
+                "interval": 604800,
+                "fn": self._task_blindspot_scan,
+            },
+        }
+
+    def _load_state(self):
+        try:
+            if self._state_path.exists():
+                self._state = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except Exception:
+            self._state = {}
+
+    def _save_state(self):
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(
+                json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.warning("Scheduler: failed to save state: %s", e)
+
+    def _should_run(self, task_name: str, interval: float, hour: int = None) -> bool:
+        last = self._state.get(task_name, 0)
+        now = time.time()
+        if now - last < interval:
+            return False
+        if hour is not None:
+            current_hour = datetime.now().hour
+            if current_hour < hour:
+                return False
+        return True
+
+    def tick(self):
+        for name, cfg in self._tasks.items():
+            try:
+                if self._should_run(name, cfg["interval"], cfg.get("hour")):
+                    logger.info("Scheduler: running %s", name)
+                    cfg["fn"]()
+                    self._state[name] = time.time()
+                    self._save_state()
+            except Exception as e:
+                logger.error("Scheduler task %s failed: %s", name, e, exc_info=True)
+
+    def _task_morning_briefing(self):
+        try:
+            from second_brain.bridge import bridge as sb_bridge
+            data = sb_bridge.daily_briefing()
+            text = self._humanize_briefing(data)
+            self._pusher.push(text)
+        except Exception as e:
+            logger.error("Morning briefing failed: %s", e)
+
+    def _humanize_briefing(self, data: dict) -> str:
+        """Generate a warm, human briefing using LLM if available."""
+        try:
+            import llm_client
+            if llm_client.is_available():
+                raw_text = data.get("text", "")
+                stats = (
+                    f"记忆总量={data.get('total_memories', 0)}, "
+                    f"灵感={data.get('insight_count', 0)}, "
+                    f"沉睡={data.get('dormant_count', 0)}, "
+                    f"趋势={data.get('trend_count', 0)}, "
+                    f"高活力={data.get('vitality_distribution', {}).get('high', 0)}"
+                )
+                personality = self._load_personality_style()
+                prompt = (
+                    f"你是用户的 AI 记忆伙伴。把以下记忆系统数据转化为一段温暖、自然、简洁的中文问候。"
+                    f"不要列数字，不要用表格，像朋友一样聊天。控制在 200 字以内。"
+                    f"\n\n原始数据:\n{raw_text}\n\n统计: {stats}"
+                )
+                if personality:
+                    prompt += f"\n\n用户沟通风格偏好: {personality}"
+
+                humanized = llm_client.generate(
+                    prompt=prompt,
+                    system="你是一个有温度的 AI 伙伴，语言简洁温暖，像朋友而非机器人。",
+                    max_tokens=400,
+                    temperature=0.7,
+                )
+                if humanized:
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    return f"🧠 {today}\n\n{humanized}"
+        except Exception as e:
+            logger.debug("Humanized briefing failed, using raw: %s", e)
+
+        return data.get("text", "无法生成简报")
+
+    def _load_personality_style(self) -> str:
+        try:
+            import yaml
+            p_path = _WORKSPACE / "PERSONALITY.yaml"
+            if p_path.exists():
+                data = yaml.safe_load(p_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    style = data.get("communication_style", data.get("沟通风格", ""))
+                    return str(style)[:200] if style else ""
+        except Exception:
+            pass
+        return ""
+
+    def _task_collision(self):
+        try:
+            from second_brain.bridge import bridge as sb_bridge
+            result = sb_bridge.collide()
+            insights = result.get("insights", [])
+            high_novelty = [i for i in insights if i.get("novelty", 0) >= 4]
+            if high_novelty:
+                text = "💡 *灵感碰撞有新发现:*\n\n"
+                for ins in high_novelty[:2]:
+                    text += (
+                        f"*[{ins.get('strategy', '?')}]* (新颖度 {ins.get('novelty', 0)})\n"
+                        f"联系: {ins.get('connection', '')[:120]}\n"
+                        f"灵感: {ins.get('ideas', '')[:120]}\n\n"
+                    )
+                self._pusher.push(text)
+        except Exception as e:
+            logger.error("Collision task failed: %s", e)
+
+    def _task_consolidate(self):
+        try:
+            from chronos.bridge import bridge as chronos_bridge
+            chronos_bridge.consolidate()
+        except Exception as e:
+            logger.error("Consolidate failed: %s", e)
+
+    def _task_digest(self):
+        try:
+            from memora.digest import digest_memories
+            digest_memories(days=7)
+        except Exception as e:
+            logger.error("Digest failed: %s", e)
+
+    def _task_dormant_check(self):
+        try:
+            from second_brain.bridge import bridge as sb_bridge
+            result = sb_bridge.list_dormant()
+            memories = result.get("memories", [])
+            if memories:
+                text = f"💤 *{len(memories)} 条记忆已经沉睡了:*\n\n"
+                for m in memories[:3]:
+                    days = m.get("dormant_days", 0)
+                    content = m.get("content", "")[:80]
+                    text += f"• ({days}天未提及) {content}\n"
+                text += "\n需要跟进哪个？"
+                self._pusher.push(text)
+        except Exception as e:
+            logger.error("Dormant check failed: %s", e)
+
+    def _task_contradiction_scan(self):
+        try:
+            from second_brain.inference import inference_engine
+            reports = inference_engine.scan_contradictions()
+            critical = [r for r in reports if r.risk_score > 0.5]
+            if critical:
+                text = f"⚠️ *发现 {len(critical)} 个高风险矛盾:*\n\n"
+                for r in critical[:2]:
+                    text += (
+                        f"决策: {r.decision_content[:80]}\n"
+                        f"风险: {r.risk_score:.0%}\n"
+                        f"矛盾证据: {r.contradicting[0].get('content', '')[:80] if r.contradicting else '?'}\n\n"
+                    )
+                self._pusher.push(text)
+        except Exception as e:
+            logger.error("Contradiction scan failed: %s", e)
+
+    def _task_blindspot_scan(self):
+        try:
+            from second_brain.inference import inference_engine
+            reports = inference_engine.detect_all_blind_spots()
+            if reports:
+                text = f"🔍 *盲区扫描发现 {len(reports)} 个决策有未考虑的维度:*\n\n"
+                for r in reports[:2]:
+                    missing = r.missing_dimensions[:3] if hasattr(r, "missing_dimensions") else []
+                    text += (
+                        f"决策: {r.decision_content[:80]}\n"
+                        f"遗漏: {', '.join(missing)}\n\n"
+                    )
+                self._pusher.push(text)
+        except Exception as e:
+            logger.error("Blindspot scan failed: %s", e)
+
+    def start(self):
+        def _loop():
+            time.sleep(60)
+            while True:
+                try:
+                    self.tick()
+                except Exception as e:
+                    logger.error("Scheduler tick error: %s", e, exc_info=True)
+                time.sleep(300)
+        t = threading.Thread(target=_loop, daemon=True, name="scheduler")
+        t.start()
+        logger.info("Scheduler started (7 tasks configured)")
+
+
 def _track_access_async(results: list, query: str):
     """Record access events for returned search results (non-blocking)."""
     import threading
@@ -169,7 +581,10 @@ def _track_access_async(results: list, query: str):
 
 
 def _kg_extract_async(content: str, importance: float):
-    """Extract knowledge nodes/edges from new memory (non-blocking)."""
+    """Extract knowledge nodes/edges from new memory (non-blocking).
+
+    If a contradiction is found during propagation, push to Telegram immediately.
+    """
     import threading
     def _do_extract():
         try:
@@ -183,6 +598,10 @@ def _kg_extract_async(content: str, importance: float):
                     alerts = inference_engine.propagate(node.id)
                     for alert in alerts:
                         logger.info("KG propagation alert: %s", alert.message)
+                        if "contradicts" in alert.message.lower():
+                            _telegram.push(
+                                f"⚡ *实时矛盾检测*\n\n{alert.message[:300]}"
+                            )
         except Exception as e:
             logger.debug("KG extraction skipped: %s", e)
     threading.Thread(target=_do_extract, daemon=True).start()
@@ -432,8 +851,131 @@ def _execute_endpoint(path: str, body: dict) -> dict:
             comment=body.get("comment", ""),
         )
 
+    elif path == "/bookmark":
+        return _save_bookmark(body.get("summary", ""), body.get("topics", []))
+
     else:
         raise ValueError(f"Unknown endpoint: {path}")
+
+
+# ── Bookmark + Session Context ────────────────────────────────
+
+def _save_bookmark(summary: str, topics: list = None) -> dict:
+    """Save a conversation bookmark for session continuity."""
+    bookmark_path = _WORKSPACE / "memory" / "bookmarks.jsonl"
+    bookmark_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "summary": summary,
+        "topics": topics or [],
+        "timestamp": datetime.now().isoformat(),
+        "date": datetime.now().strftime("%Y-%m-%d"),
+    }
+    with open(bookmark_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return {"ok": True, "timestamp": entry["timestamp"]}
+
+
+def _get_session_context() -> dict:
+    """Build a pre-constructed context block for session startup.
+
+    Only uses fast, local data lookups. Avoids any LLM or heavy embedding calls
+    to keep response time <2s.
+    """
+    result: Dict[str, Any] = {}
+
+    bookmark_path = _WORKSPACE / "memory" / "bookmarks.jsonl"
+    if bookmark_path.exists():
+        try:
+            lines = bookmark_path.read_text(encoding="utf-8").strip().splitlines()
+            if lines:
+                last = json.loads(lines[-1])
+                result["last_conversation_summary"] = last.get("summary", "")
+                result["last_conversation_topics"] = last.get("topics", [])
+                result["last_conversation_date"] = last.get("date", "")
+        except Exception:
+            pass
+
+    try:
+        from second_brain.knowledge_graph import kg
+        stats = kg.stats()
+        node_types = stats.get("node_types", {})
+        threads_hint = []
+        for ntype in ["goal", "question", "decision"]:
+            count = node_types.get(ntype, 0)
+            if count > 0:
+                threads_hint.append({"type": ntype, "count": count})
+        result["active_threads"] = threads_hint
+    except Exception:
+        result["active_threads"] = []
+
+    try:
+        from second_brain.tracker import tracker as sb_tracker
+        trends = sb_tracker.find_trends()
+        result["recent_focus"] = [
+            f"{t.get('queries', ['?'])[0]} ({t['hits']}次)" for t in trends[:5]
+        ]
+    except Exception:
+        result["recent_focus"] = []
+
+    result["pending_contradictions"] = []
+
+    personality_path = _WORKSPACE / "PERSONALITY.yaml"
+    if personality_path.exists():
+        try:
+            import yaml
+            pdata = yaml.safe_load(personality_path.read_text(encoding="utf-8"))
+            if isinstance(pdata, dict):
+                traits = []
+                for k, v in pdata.items():
+                    if isinstance(v, str) and len(v) < 100:
+                        traits.append(f"{k}: {v}")
+                    elif isinstance(v, list):
+                        traits.append(f"{k}: {', '.join(str(x) for x in v[:3])}")
+                result["personality_traits"] = "; ".join(traits[:6])
+            else:
+                result["personality_traits"] = ""
+        except Exception:
+            result["personality_traits"] = ""
+    else:
+        result["personality_traits"] = ""
+
+    result["dormant_reminders"] = []
+
+    result["milestones"] = _compute_milestones()
+
+    return result
+
+
+def _compute_milestones() -> dict:
+    memory_dir = _WORKSPACE / "memory"
+    milestones = {}
+    if memory_dir.exists():
+        md_files = sorted(memory_dir.glob("20??-??-??.md"))
+        if md_files:
+            try:
+                first_date_str = md_files[0].stem
+                first_date = datetime.strptime(first_date_str, "%Y-%m-%d")
+                days = (datetime.now() - first_date).days
+                milestones["days_since_first_memory"] = days
+            except Exception:
+                pass
+            milestones["total_days_with_logs"] = len(md_files)
+
+    bookmark_path = _WORKSPACE / "memory" / "bookmarks.jsonl"
+    if bookmark_path.exists():
+        try:
+            lines = bookmark_path.read_text(encoding="utf-8").strip().splitlines()
+            today = datetime.now().strftime("%Y-%m-%d")
+            week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            this_week = sum(
+                1 for l in lines
+                if json.loads(l).get("date", "") >= week_ago
+            )
+            milestones["conversations_this_week"] = this_week
+        except Exception:
+            pass
+
+    return milestones
 
 
 class MemoryHandler(BaseHTTPRequestHandler):
@@ -592,6 +1134,9 @@ class MemoryHandler(BaseHTTPRequestHandler):
             from second_brain.strategy_weights import strategy_weights
             self._respond(200, strategy_weights.stats())
 
+        elif self.path == "/session-context":
+            self._respond(200, _get_session_context())
+
         else:
             self._respond(404, {"error": f"Unknown endpoint: {self.path}"})
 
@@ -716,6 +1261,12 @@ def main():
     logger.info("Loading shared embedder...")
     _load_shared_embedder()
 
+    ingestor = AutoIngestor()
+    ingestor.start()
+
+    scheduler = Scheduler(_telegram)
+    scheduler.start()
+
     server = ThreadedServer((args.host, args.port), MemoryHandler)
     _server_ref = server
     logger.info("Memory Server listening on %s:%d (PID %d)",
@@ -724,7 +1275,9 @@ def main():
     logger.info("           /chronos/learn /chronos/consolidate")
     logger.info("           /msa/ingest /msa/query /msa/interleave")
     logger.info("           /second-brain/collide /second-brain/report /second-brain/status /second-brain/track")
+    logger.info("           /session-context /bookmark")
     logger.info("           /task/<id> /tasks  (async: POST with {\"async\":true})")
+    logger.info("Background: AutoIngestor (30min), Scheduler (7 tasks)")
 
     try:
         server.serve_forever()

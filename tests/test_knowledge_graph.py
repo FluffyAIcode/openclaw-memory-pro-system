@@ -35,6 +35,20 @@ class TestKGNode:
         assert n2.id == n.id
         assert n2.confidence == n.confidence
 
+    def test_sentiment_field(self):
+        n = KGNode("user is excited", KGNodeType.PREFERENCE, sentiment="excited")
+        assert n.sentiment == "excited"
+        d = n.to_dict()
+        assert d["sentiment"] == "excited"
+        n2 = KGNode.from_dict(d)
+        assert n2.sentiment == "excited"
+
+    def test_sentiment_empty_not_in_dict(self):
+        n = KGNode("neutral fact", KGNodeType.FACT)
+        assert n.sentiment == ""
+        d = n.to_dict()
+        assert "sentiment" not in d
+
     def test_touch_increments_access(self):
         n = KGNode("fact", KGNodeType.FACT)
         assert n.access_count == 0

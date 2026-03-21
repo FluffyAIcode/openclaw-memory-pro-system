@@ -48,6 +48,9 @@ _COLLISION_PROMPT = """\
 
 ## 新颖度
 （只输出 1-5 的数字，5 分最新颖）
+
+## 情感共鸣
+（只输出 1-5 的数字。5 分=这个联系能真正触动用户、与其目标和价值观深度相关；1 分=纯技术关联、无情感价值）
 """
 
 _STRUCTURED_SECTION = """
@@ -72,11 +75,12 @@ class Insight:
     """A single collision result."""
 
     __slots__ = ("memory_a", "memory_b", "strategy", "connection",
-                 "ideas", "novelty", "timestamp", "raw_llm",
-                 "source_a", "source_b")
+                 "ideas", "novelty", "emotional_relevance", "timestamp",
+                 "raw_llm", "source_a", "source_b")
 
     def __init__(self, memory_a: str, memory_b: str, strategy: str,
                  connection: str = "", ideas: str = "", novelty: int = 0,
+                 emotional_relevance: int = 0,
                  raw_llm: str = "", timestamp: str = "",
                  source_a: str = "", source_b: str = ""):
         self.memory_a = memory_a
@@ -85,13 +89,14 @@ class Insight:
         self.connection = connection
         self.ideas = ideas
         self.novelty = novelty
+        self.emotional_relevance = emotional_relevance
         self.raw_llm = raw_llm
         self.timestamp = timestamp or datetime.now().isoformat()
         self.source_a = source_a
         self.source_b = source_b
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "memory_a": self.memory_a[:200],
             "memory_b": self.memory_b[:200],
             "strategy": self.strategy,
@@ -102,6 +107,9 @@ class Insight:
             "novelty": self.novelty,
             "timestamp": self.timestamp,
         }
+        if self.emotional_relevance:
+            d["emotional_relevance"] = self.emotional_relevance
+        return d
 
     def to_markdown(self) -> str:
         src_a = _SOURCE_NAMES.get(self.source_a, self.source_a)
@@ -116,19 +124,34 @@ class Insight:
 
 
 def _parse_novelty(text: str) -> int:
+    """Extract novelty score specifically from the '新颖度' section."""
+    sections = text.split("##")
+    for section in sections:
+        header_end = section.find("\n")
+        if header_end == -1:
+            continue
+        header = section[:header_end].strip().lower()
+        if "新颖" in header or "novelty" in header:
+            body = section[header_end:].strip()
+            for ch in body:
+                if ch.isdigit() and 1 <= int(ch) <= 5:
+                    return int(ch)
     for line in reversed(text.strip().splitlines()):
         line = line.strip().lstrip("#").strip()
+        if "情感" in line or "emotional" in line or "共鸣" in line:
+            continue
         for ch in line:
             if ch.isdigit() and 1 <= int(ch) <= 5:
                 return int(ch)
     return 3
 
 
-def _parse_llm_output(text: str) -> Tuple[str, str, int]:
-    """Extract connection, ideas, novelty from LLM response."""
+def _parse_llm_output(text: str) -> Tuple[str, str, int, int]:
+    """Extract connection, ideas, novelty, emotional_relevance from LLM response."""
     connection = ""
     ideas = ""
     novelty = _parse_novelty(text)
+    emotional_relevance = 0
 
     sections = text.split("##")
     for section in sections:
@@ -141,8 +164,14 @@ def _parse_llm_output(text: str) -> Tuple[str, str, int]:
             connection = body
         elif "灵感" in header or "idea" in header or "inspiration" in header:
             ideas = body
+        elif "情感" in header or "emotional" in header or "共鸣" in header:
+            try:
+                emotional_relevance = int("".join(c for c in body if c.isdigit())[:1] or "0")
+                emotional_relevance = max(1, min(5, emotional_relevance))
+            except (ValueError, IndexError):
+                emotional_relevance = 0
 
-    return connection, ideas, novelty
+    return connection, ideas, novelty, emotional_relevance
 
 
 # ── Collision Engine ──────────────────────────────────────────
@@ -514,11 +543,12 @@ class CollisionEngine:
             pass
 
         if llm_result:
-            connection, ideas, novelty = _parse_llm_output(llm_result)
+            connection, ideas, novelty, emo_rel = _parse_llm_output(llm_result)
             return Insight(
                 memory_a=content_a, memory_b=content_b,
                 strategy=strategy, connection=connection,
-                ideas=ideas, novelty=novelty, raw_llm=llm_result,
+                ideas=ideas, novelty=novelty,
+                emotional_relevance=emo_rel, raw_llm=llm_result,
                 source_a=source_a, source_b=source_b,
             )
 

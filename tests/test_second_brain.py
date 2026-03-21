@@ -191,19 +191,29 @@ class TestCollisionEngineV2:
 
     def test_parse_llm_output(self):
         from second_brain.collision import _parse_llm_output
-        text = "## 联系发现\n编程相关\n\n## 灵感\n新框架\n\n## 新颖度\n4"
-        conn, ideas, nov = _parse_llm_output(text)
+        text = "## 联系发现\n编程相关\n\n## 灵感\n新框架\n\n## 新颖度\n4\n\n## 情感共鸣\n3"
+        conn, ideas, nov, emo = _parse_llm_output(text)
         assert "编程" in conn
         assert "框架" in ideas
         assert nov == 4
+        assert emo == 3
+
+    def test_parse_llm_output_no_emotional(self):
+        from second_brain.collision import _parse_llm_output
+        text = "## 联系发现\n编程相关\n\n## 灵感\n新框架\n\n## 新颖度\n4"
+        conn, ideas, nov, emo = _parse_llm_output(text)
+        assert nov == 4
+        assert emo == 0
 
     def test_insight_to_dict_with_sources(self):
         from second_brain.collision import Insight
         ins = Insight("a", "b", "chronos_crossref", "conn", "idea", 4,
+                      emotional_relevance=3,
                       source_a="chronos", source_b="memora")
         d = ins.to_dict()
         assert d["source_a"] == "chronos"
         assert d["source_b"] == "memora"
+        assert d["emotional_relevance"] == 3
 
     def test_insight_to_markdown_shows_layer_names(self):
         from second_brain.collision import Insight

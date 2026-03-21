@@ -49,13 +49,14 @@ class KGEdgeType(str, Enum):
 class KGNode:
     __slots__ = ("id", "content", "node_type", "importance", "created_at",
                  "updated_at", "access_count", "confidence", "maturity",
-                 "source_hashes")
+                 "source_hashes", "sentiment")
 
     def __init__(self, content: str, node_type: KGNodeType,
                  importance: float = 0.5, confidence: float = 0.8,
                  node_id: str = "", created_at: str = "",
                  updated_at: str = "", access_count: int = 0,
-                 maturity: float = 0.0, source_hashes: list = None):
+                 maturity: float = 0.0, source_hashes: list = None,
+                 sentiment: str = ""):
         self.id = node_id or uuid.uuid4().hex[:12]
         self.content = content
         self.node_type = KGNodeType(node_type)
@@ -66,9 +67,10 @@ class KGNode:
         self.confidence = confidence
         self.maturity = maturity
         self.source_hashes = source_hashes or []
+        self.sentiment = sentiment
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "content": self.content,
             "node_type": self.node_type.value,
@@ -80,6 +82,9 @@ class KGNode:
             "maturity": self.maturity,
             "source_hashes": self.source_hashes,
         }
+        if self.sentiment:
+            d["sentiment"] = self.sentiment
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "KGNode":
@@ -94,6 +99,7 @@ class KGNode:
             access_count=d.get("access_count", 0),
             maturity=d.get("maturity", 0.0),
             source_hashes=d.get("source_hashes", []),
+            sentiment=d.get("sentiment", ""),
         )
 
     def update_maturity(self):

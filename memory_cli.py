@@ -481,6 +481,72 @@ def cmd_insight_stats(args):
         print(f"  {name:25s} 权重={w:.2f} {bar}  (评{count}次, 均={avg})")
 
 
+def cmd_session_context(args):
+    result = _get("/session-context")
+
+    summary = result.get("last_conversation_summary", "")
+    if summary:
+        date = result.get("last_conversation_date", "")
+        print(f"📝 上次对话 ({date}): {summary[:200]}")
+        topics = result.get("last_conversation_topics", [])
+        if topics:
+            print(f"   话题: {', '.join(topics)}")
+        print()
+
+    threads = result.get("active_threads", [])
+    if threads:
+        print("🧵 活跃思维线索:")
+        for t in threads:
+            status_icon = {"exploring": "🔎", "decided": "✅", "nascent": "🌱"}.get(
+                t.get("status", ""), "📌")
+            print(f"   {status_icon} {t.get('title', '?')} ({t.get('node_count', 0)} 节点)")
+        print()
+
+    focus = result.get("recent_focus", [])
+    if focus:
+        print(f"📈 近期关注: {', '.join(focus)}")
+        print()
+
+    contradictions = result.get("pending_contradictions", [])
+    if contradictions:
+        print("⚠️ 待解决矛盾:")
+        for c in contradictions:
+            print(f"   [{c.get('risk', 0):.0%}] {c.get('decision', '')}")
+        print()
+
+    personality = result.get("personality_traits", "")
+    if personality:
+        print(f"🎭 人格特质: {personality[:200]}")
+        print()
+
+    dormant = result.get("dormant_reminders", [])
+    if dormant:
+        print("💤 沉睡提醒:")
+        for d in dormant:
+            print(f"   • {d}")
+        print()
+
+    milestones = result.get("milestones", {})
+    days = milestones.get("days_since_first_memory")
+    convos = milestones.get("conversations_this_week")
+    if days is not None:
+        parts = [f"记忆系统已运行 {days} 天"]
+        if convos:
+            parts.append(f"本周对话 {convos} 次")
+        print(f"🏆 {', '.join(parts)}")
+
+
+def cmd_bookmark(args):
+    result = _post("/bookmark", {
+        "summary": args.summary,
+        "topics": args.topics.split(",") if args.topics else [],
+    })
+    if result.get("ok"):
+        print(f"📌 会话书签已保存 ({result.get('timestamp', '?')[:16]})")
+    else:
+        print("书签保存失败")
+
+
 def cmd_server_stop(args):
     pid_file = _WORKSPACE / "memory" / "server.pid"
     if not pid_file.exists():
@@ -592,6 +658,14 @@ def main():
 
     p = sub.add_parser("insight-stats", help="Insight strategy statistics")
     p.set_defaults(func=cmd_insight_stats)
+
+    p = sub.add_parser("session-context", help="Pre-built context for session startup")
+    p.set_defaults(func=cmd_session_context)
+
+    p = sub.add_parser("bookmark", help="Save conversation bookmark")
+    p.add_argument("summary", help="Conversation summary")
+    p.add_argument("-t", "--topics", default="", help="Comma-separated topics")
+    p.set_defaults(func=cmd_bookmark)
 
     p = sub.add_parser("server-start", help="Start the Memory Server")
     p.set_defaults(func=cmd_server_start)

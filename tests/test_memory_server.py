@@ -9,7 +9,9 @@ STUBS:
 import json
 import os
 import sys
+import time
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -411,3 +413,160 @@ class TestMemoryHandler:
             memory_server.MemoryHandler.do_POST(handler)
             assert responses[0][0] == 200
             assert len(responses[0][1]["matches"]) == 1
+
+    def test_session_context_endpoint(self):
+        import memory_server
+        with patch.object(memory_server, "_get_session_context",
+                          return_value={"active_threads": [], "milestones": {}}):
+            handler, responses = self._make_handler("GET", "/session-context")
+            memory_server.MemoryHandler.do_GET(handler)
+            assert responses[0][0] == 200
+            assert "milestones" in responses[0][1]
+
+    def test_bookmark_endpoint(self):
+        import memory_server
+        with patch.object(memory_server, "_save_bookmark",
+                          return_value={"ok": True, "timestamp": "2026-03-21"}):
+            body = json.dumps({"summary": "test chat"}).encode()
+            handler, responses = self._make_handler("POST", "/bookmark", body)
+            memory_server.MemoryHandler.do_POST(handler)
+            assert responses[0][0] == 200
+            assert responses[0][1]["ok"] is True
+
+
+class TestTelegramPusher:
+    def test_push_no_config(self):
+        import memory_server
+        pusher = memory_server.TelegramPusher()
+        pusher._loaded = True
+        pusher._token = None
+        pusher._chat_id = None
+        assert pusher.push("test") is False
+
+    def test_push_with_config(self):
+        import memory_server
+        pusher = memory_server.TelegramPusher()
+        pusher._loaded = True
+        pusher._token = "fake_token"
+        pusher._chat_id = "12345"
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(
+            {"ok": True, "result": {"message_id": 1}}
+        ).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with patch("memory_server.TelegramPusher.push") as mock_push:
+            mock_push.return_value = True
+            assert pusher.push("hello") is True
+
+
+class TestAutoIngestor:
+    def test_split_paragraphs(self):
+        import memory_server
+        ingestor = memory_server.AutoIngestor()
+        lines = [
+            "### 10:00:00 [Hub/memora]",
+            "First paragraph content here",
+            "",
+            "### 11:00:00 [Chronos]",
+            "Second paragraph content here for testing",
+        ]
+        paragraphs = ingestor._split_paragraphs(lines)
+        assert len(paragraphs) == 2
+        assert "First paragraph" in paragraphs[0]
+        assert "Second paragraph" in paragraphs[1]
+
+    def test_is_test_content(self):
+        import memory_server
+        ingestor = memory_server.AutoIngestor()
+        assert ingestor._is_test_content("test content") is True
+        assert ingestor._is_test_content("测试内容") is True
+        assert ingestor._is_test_content("用户偏好深色主题，不喜欢弹窗通知。这是一条真实的记忆内容。") is False
+
+    def test_scan_and_ingest(self, tmp_path):
+        import memory_server
+        old_ws = memory_server._WORKSPACE
+        memory_server._WORKSPACE = tmp_path
+
+        mem_dir = tmp_path / "memory"
+        mem_dir.mkdir()
+        md_file = mem_dir / "2026-03-21.md"
+        md_file.write_text(
+            "### 10:00:00 [Hub/memora]\n"
+            "用户偏好深色主题，不喜欢弹窗通知，这是一条正式的记忆内容\n"
+        )
+
+        ingestor = memory_server.AutoIngestor()
+        ingestor._state_path = tmp_path / "memory" / "ingestion_state.json"
+
+        mock_hub = MagicMock()
+        mock_hub.remember.return_value = {"systems_used": ["memora"], "word_count": 10}
+        with patch.object(memory_server, "_get_hub", return_value=mock_hub):
+            with patch.object(memory_server, "_kg_extract_async"):
+                ingestor.scan_and_ingest()
+
+        assert mock_hub.remember.called
+        assert ingestor._state.get("2026-03-21.md") is not None
+        memory_server._WORKSPACE = old_ws
+
+
+class TestScheduler:
+    def test_should_run_fresh(self):
+        import memory_server
+        pusher = MagicMock()
+        scheduler = memory_server.Scheduler(pusher)
+        scheduler._state = {}
+        assert scheduler._should_run("test_task", 3600) is True
+
+    def test_should_run_too_soon(self):
+        import memory_server
+        pusher = MagicMock()
+        scheduler = memory_server.Scheduler(pusher)
+        scheduler._state = {"test_task": time.time() - 100}
+        assert scheduler._should_run("test_task", 3600) is False
+
+    def test_should_run_with_hour_not_reached(self):
+        import memory_server
+        pusher = MagicMock()
+        scheduler = memory_server.Scheduler(pusher)
+        scheduler._state = {}
+        assert scheduler._should_run("test_task", 3600, hour=25) is False
+
+    def test_tick_runs_ready_tasks(self):
+        import memory_server
+        pusher = MagicMock()
+        scheduler = memory_server.Scheduler(pusher)
+        scheduler._state = {}
+        mock_fn = MagicMock()
+        scheduler._tasks = {"test": {"interval": 0, "fn": mock_fn}}
+        scheduler._save_state = MagicMock()
+        scheduler.tick()
+        mock_fn.assert_called_once()
+
+
+class TestBookmarkAndContext:
+    def test_save_bookmark(self, tmp_path):
+        import memory_server
+        old_ws = memory_server._WORKSPACE
+        memory_server._WORKSPACE = tmp_path
+        result = memory_server._save_bookmark("we discussed X", ["topic1"])
+        assert result["ok"] is True
+        bf = tmp_path / "memory" / "bookmarks.jsonl"
+        assert bf.exists()
+        data = json.loads(bf.read_text().strip())
+        assert data["summary"] == "we discussed X"
+        assert "topic1" in data["topics"]
+        memory_server._WORKSPACE = old_ws
+
+    def test_compute_milestones(self, tmp_path):
+        import memory_server
+        old_ws = memory_server._WORKSPACE
+        memory_server._WORKSPACE = tmp_path
+        mem_dir = tmp_path / "memory"
+        mem_dir.mkdir()
+        (mem_dir / "2026-03-15.md").write_text("test")
+        (mem_dir / "2026-03-20.md").write_text("test")
+        milestones = memory_server._compute_milestones()
+        assert milestones["total_days_with_logs"] == 2
+        assert milestones["days_since_first_memory"] >= 0
+        memory_server._WORKSPACE = old_ws

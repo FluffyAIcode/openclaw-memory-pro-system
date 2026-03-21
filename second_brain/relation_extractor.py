@@ -37,7 +37,7 @@ _EXTRACTION_PROMPT = """\
 请输出严格的 JSON（不要加 ```json 标记）：
 {{{{
   "new_nodes": [
-    {{{{"content": "提取出的知识单元（简洁准确）", "type": "fact|decision|preference|goal|question", "confidence": 0.9}}}}
+    {{{{"content": "提取出的知识单元（简洁准确）", "type": "fact|decision|preference|goal|question", "confidence": 0.9, "sentiment": "positive|negative|neutral|excited|frustrated|curious|determined|concerned"}}}}
   ],
   "edges": [
     {{{{"from_content": "新节点内容 或 已有节点ID", "to_content": "新节点内容 或 已有节点ID", "type": "supports|contradicts|extends|depends_on|alternative_to|addresses", "weight": 0.8, "evidence": "一句话理由"}}}}
@@ -47,6 +47,7 @@ _EXTRACTION_PROMPT = """\
 ## 规则
 - 只提取有信息量的知识单元，跳过寒暄和无意义的内容
 - type 必须准确：fact=客观事实, decision=用户做的选择, preference=偏好/倾向, goal=目标/愿望, question=未解决的问题
+- sentiment 表示这条知识携带的情感色彩：positive(积极), negative(消极), neutral(中性), excited(兴奋), frustrated(沮丧), curious(好奇), determined(坚定), concerned(担忧)
 - 如果新记忆与任何已有节点存在矛盾（contradicts），必须标出——这是最有价值的关系
 - depends_on 表示逻辑依赖（A 成立的前提是 B 成立）
 - 如果没有有价值的知识，返回空数组: {{{{"new_nodes": [], "edges": []}}}}
@@ -203,6 +204,7 @@ class RelationExtractor:
                     content=nd["content"],
                     node_type=nd.get("type", "fact"),
                     confidence=float(nd.get("confidence", 0.8)),
+                    sentiment=nd.get("sentiment", ""),
                 )
                 new_nodes.append(node)
             except (KeyError, ValueError) as e:
