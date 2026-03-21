@@ -8,7 +8,7 @@ A production-grade cognitive architecture for the [OpenClaw](https://github.com/
 
 本仓库的**正式产品目标**如下（便于全文搜索：直接搜「产品目标」或下段关键词「碎片化」「非连续时间」）：
 
-> 在当前信息环境下，支持**人**与 **Agent** 以**碎片化、发散化、非连续时间**的方式学习——断断续续、东一点西一点、往往没有明确的课题或课表；同时期望通过**长期时间积累**，逐步走向更**系统化**的理解、更**专业化**的深度，以及**可操作的**技能与规程。
+> 在当前信息环境下，支持**人**与 **Agent** 以**碎片化、发散化、非连续时间**的方式学习——断断续续、东一点西一点、往往没有明确的课题或课表；同时期望通过**长期时间积累**，逐步实现**系统化**的理解、更**专业化**的深度，以及**可操作的**技能的目标。
 
 **North star（英文对照）：** Support humans and agents in today’s information environment through **fragmented, divergent, non-continuous learning** (patchy inputs, no fixed curriculum), while aiming—via **sustained accumulation over time**—for **systematic** understanding, **domain depth**, and **actionable** skills and procedures.
 
