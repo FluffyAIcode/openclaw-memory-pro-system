@@ -82,6 +82,36 @@ memory-cli review-dormant
 
 然后更新 `lastChecks.dormant_check` 时间戳。
 
+### 🕸️ 知识图谱维护（每天 1 次）
+
+检查 `lastChecks.kg_maintenance`。如果距离上次超过 24 小时，执行：
+
+```bash
+memory-cli graph-status
+```
+
+如果节点数 > 0，同时运行矛盾扫描：
+
+```bash
+memory-cli contradictions
+```
+
+如果发现高风险矛盾（risk > 0.5），在下次与用户对话时主动提醒。
+
+然后更新 `lastChecks.kg_maintenance` 时间戳。
+
+### 🔍 盲区扫描（每周 1 次）
+
+检查 `lastChecks.blindspot_scan`。如果距离上次超过 7 天，执行：
+
+```bash
+memory-cli blindspots
+```
+
+如果发现有盲区的重要决策，生成提醒推送给用户。
+
+然后更新 `lastChecks.blindspot_scan` 时间戳。
+
 ### 📝 日常检查（按 AGENTS.md 指引轮询）
 
 - 检查邮件、日历、社交通知等（按 AGENTS.md 中的频率）

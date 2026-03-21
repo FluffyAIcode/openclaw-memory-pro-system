@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="openclaw-memory",
-    version="2.1.0",
+    version="3.0.0",
     description="OpenClaw memory systems: Memora (RAG) + Chronos (CL) + MSA (Sparse Attention) + Second Brain + Memory Server",
     packages=find_packages(),
     install_requires=[
@@ -13,6 +13,7 @@ setup(
         "python-dateutil>=2.9.0",
         "requests>=2.31.0",
         "numpy>=1.26.0",
+        "networkx>=3.0",
     ],
     extras_require={
         "chronos": [

@@ -379,6 +379,108 @@ def cmd_review_dormant(args):
     print("提示: 用 memory-cli recall \"关键词\" 可唤醒相关记忆")
 
 
+def cmd_contradictions(args):
+    result = _get("/contradictions")
+    count = result.get("count", 0)
+    reports = result.get("reports", [])
+    if not reports:
+        print("✅ 知识图谱中没有发现矛盾决策")
+        return
+    print(f"⚠️ 发现 {count} 个存在矛盾证据的决策:\n")
+    for i, r in enumerate(reports, 1):
+        risk = r.get("risk_score", 0)
+        decision = r.get("decision_content", "")[:120]
+        sc = r.get("supporting_count", 0)
+        cc = r.get("contradicting_count", 0)
+        print(f"  [{i}] 风险={risk:.1%} | 支撑={sc} | 矛盾={cc}")
+        print(f"      决策: {decision}")
+        for c in r.get("contradicting", [])[:2]:
+            print(f"      ❌ {c.get('content', '')[:100]}")
+            if c.get("evidence"):
+                print(f"         理由: {c['evidence']}")
+        print()
+
+
+def cmd_blindspots(args):
+    result = _get("/blindspots")
+    count = result.get("count", 0)
+    reports = result.get("reports", [])
+    if not reports:
+        print("✅ 没有发现明显的认知盲区")
+        return
+    print(f"🔍 发现 {count} 个决策存在未考虑的维度:\n")
+    for i, r in enumerate(reports, 1):
+        decision = r.get("decision_content", "")[:120]
+        missing = r.get("missing", [])
+        coverage = r.get("coverage_ratio", 0)
+        print(f"  [{i}] 覆盖率={coverage:.0%}")
+        print(f"      决策: {decision}")
+        print(f"      ⚠️ 未考虑: {', '.join(missing)}")
+        print()
+
+
+def cmd_threads(args):
+    result = _get("/threads")
+    count = result.get("count", 0)
+    threads = result.get("threads", [])
+    if not threads:
+        print("知识图谱中暂无思维线索（需要更多记忆来形成线索）")
+        return
+    print(f"🧵 发现 {count} 条思维线索:\n")
+    for i, t in enumerate(threads, 1):
+        title = t.get("title", "未命名")
+        nc = t.get("node_count", 0)
+        status = t.get("status", "?")
+        dtype = t.get("dominant_type", "?")
+        status_icon = {"exploring": "🔎", "decided": "✅", "nascent": "🌱",
+                       "developing": "📈"}.get(status, "❓")
+        print(f"  [{i}] {status_icon} {title} ({nc} 个节点, 状态={status}, 主类型={dtype})")
+
+
+def cmd_kg_status(args):
+    result = _get("/kg/status")
+    nodes = result.get("total_nodes", 0)
+    edges = result.get("total_edges", 0)
+    components = result.get("connected_components", 0)
+    print(f"📊 知识图谱状态:")
+    print(f"   节点: {nodes}")
+    print(f"   边:   {edges}")
+    print(f"   连通分量: {components}")
+    nt = result.get("node_types", {})
+    if nt:
+        print(f"   节点类型: {', '.join(f'{k}={v}' for k, v in nt.items())}")
+    et = result.get("edge_types", {})
+    if et:
+        print(f"   边类型:   {', '.join(f'{k}={v}' for k, v in et.items())}")
+
+
+def cmd_rate(args):
+    result = _post("/insight/rate", {
+        "insight_id": args.insight_id,
+        "strategy": args.strategy,
+        "rating": args.rating,
+        "comment": args.comment,
+    })
+    strategy = result.get("strategy", "?")
+    new_weight = result.get("new_weight", 0)
+    rating = result.get("rating", 0)
+    print(f"✅ 评分已记录: 策略={strategy}, 评分={rating}, 新权重={new_weight:.2f}")
+
+
+def cmd_insight_stats(args):
+    result = _get("/insight/stats")
+    weights = result.get("weights", {})
+    total = result.get("total_ratings", 0)
+    per_strat = result.get("per_strategy", {})
+    print(f"📊 灵感策略统计 (共 {total} 次评分):\n")
+    for name, w in sorted(weights.items(), key=lambda x: x[1], reverse=True):
+        info = per_strat.get(name, {})
+        avg = info.get("avg_rating", "-")
+        count = info.get("count", 0)
+        bar = "█" * int(w * 5)
+        print(f"  {name:25s} 权重={w:.2f} {bar}  (评{count}次, 均={avg})")
+
+
 def cmd_server_stop(args):
     pid_file = _WORKSPACE / "memory" / "server.pid"
     if not pid_file.exists():
@@ -468,6 +570,28 @@ def main():
 
     p = sub.add_parser("tasks", help="List async tasks")
     p.set_defaults(func=cmd_tasks)
+
+    p = sub.add_parser("contradictions", help="Scan KG for contradicted decisions")
+    p.set_defaults(func=cmd_contradictions)
+
+    p = sub.add_parser("blindspots", help="Detect blind spots in decisions")
+    p.set_defaults(func=cmd_blindspots)
+
+    p = sub.add_parser("threads", help="Discover thought threads from KG")
+    p.set_defaults(func=cmd_threads)
+
+    p = sub.add_parser("graph-status", help="Knowledge graph statistics")
+    p.set_defaults(func=cmd_kg_status)
+
+    p = sub.add_parser("rate", help="Rate an insight (1-5)")
+    p.add_argument("insight_id", help="Insight ID or filename")
+    p.add_argument("rating", type=int, help="Rating 1-5 (5=best)")
+    p.add_argument("-s", "--strategy", default="", help="Strategy name")
+    p.add_argument("-c", "--comment", default="", help="Optional comment")
+    p.set_defaults(func=cmd_rate)
+
+    p = sub.add_parser("insight-stats", help="Insight strategy statistics")
+    p.set_defaults(func=cmd_insight_stats)
 
     p = sub.add_parser("server-start", help="Start the Memory Server")
     p.set_defaults(func=cmd_server_start)

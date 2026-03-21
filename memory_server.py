@@ -168,6 +168,26 @@ def _track_access_async(results: list, query: str):
     threading.Thread(target=_do_track, daemon=True).start()
 
 
+def _kg_extract_async(content: str, importance: float):
+    """Extract knowledge nodes/edges from new memory (non-blocking)."""
+    import threading
+    def _do_extract():
+        try:
+            from second_brain.relation_extractor import extractor
+            result = extractor.extract(content, importance=importance)
+            if not result.skipped:
+                logger.info("KG extraction: %d nodes, %d edges",
+                            len(result.new_nodes), len(result.new_edges))
+                from second_brain.inference import inference_engine
+                for node in result.new_nodes:
+                    alerts = inference_engine.propagate(node.id)
+                    for alert in alerts:
+                        logger.info("KG propagation alert: %s", alert.message)
+        except Exception as e:
+            logger.debug("KG extraction skipped: %s", e)
+    threading.Thread(target=_do_extract, daemon=True).start()
+
+
 class TaskManager:
     """In-memory async task queue for long-running operations."""
 
@@ -269,6 +289,7 @@ _SLOW_ENDPOINTS = frozenset({
     "/msa/interleave",
     "/chronos/consolidate",
     "/digest",
+    "/kg/extract",
 })
 
 
@@ -277,7 +298,7 @@ def _execute_endpoint(path: str, body: dict) -> dict:
     hub = _get_hub()
 
     if path == "/remember":
-        return hub.remember(
+        result = hub.remember(
             content=body.get("content", ""),
             source=body.get("source", "openclaw"),
             importance=body.get("importance", 0.7),
@@ -285,6 +306,8 @@ def _execute_endpoint(path: str, body: dict) -> dict:
             title=body.get("title"),
             force_systems=body.get("force_systems"),
         )
+        _kg_extract_async(body.get("content", ""), body.get("importance", 0.7))
+        return result
 
     elif path == "/recall":
         result = hub.recall(
@@ -385,6 +408,29 @@ def _execute_endpoint(path: str, body: dict) -> dict:
             query=body.get("query", ""),
         )
         return {"ok": True}
+
+    elif path == "/kg/extract":
+        from second_brain.relation_extractor import extractor
+        result = extractor.extract(
+            content=body.get("content", ""),
+            importance=body.get("importance", 0.5),
+            source_hash=body.get("source_hash", ""),
+        )
+        return {
+            "skipped": result.skipped,
+            "reason": result.reason,
+            "new_nodes": len(result.new_nodes),
+            "new_edges": len(result.new_edges),
+        }
+
+    elif path == "/insight/rate":
+        from second_brain.strategy_weights import strategy_weights
+        return strategy_weights.rate_insight(
+            insight_id=body.get("insight_id", ""),
+            strategy=body.get("strategy", ""),
+            rating=int(body.get("rating", 3)),
+            comment=body.get("comment", ""),
+        )
 
     else:
         raise ValueError(f"Unknown endpoint: {path}")
@@ -509,6 +555,42 @@ class MemoryHandler(BaseHTTPRequestHandler):
             from second_brain.bridge import bridge as sb_bridge
             result = sb_bridge.status()
             self._respond(200, result)
+
+        elif self.path == "/contradictions":
+            from second_brain.inference import inference_engine
+            reports = inference_engine.scan_contradictions()
+            self._respond(200, {
+                "count": len(reports),
+                "reports": [r.to_dict() for r in reports],
+            })
+
+        elif self.path == "/blindspots":
+            from second_brain.inference import inference_engine
+            reports = inference_engine.detect_all_blind_spots()
+            self._respond(200, {
+                "count": len(reports),
+                "reports": [r.to_dict() for r in reports],
+            })
+
+        elif self.path == "/threads":
+            from second_brain.inference import inference_engine
+            threads = inference_engine.discover_threads()
+            self._respond(200, {
+                "count": len(threads),
+                "threads": [t.to_dict() for t in threads],
+            })
+
+        elif self.path == "/kg/status":
+            from second_brain.knowledge_graph import kg
+            self._respond(200, kg.stats())
+
+        elif self.path == "/kg/internalization":
+            from second_brain.internalization import internalization_manager
+            self._respond(200, internalization_manager.status())
+
+        elif self.path == "/insight/stats":
+            from second_brain.strategy_weights import strategy_weights
+            self._respond(200, strategy_weights.stats())
 
         else:
             self._respond(404, {"error": f"Unknown endpoint: {self.path}"})

@@ -77,7 +77,16 @@ class MemoryConsolidator:
         result = ewc_engine.consolidate(important)
         dynamic_lora.update(important)
 
-        profile_generated = self._generate_personality_profile(important)
+        kg_patterns = None
+        try:
+            from second_brain.internalization import internalization_manager
+            kg_patterns = internalization_manager.get_patterns_for_personality()
+            if kg_patterns:
+                logger.info("从知识图谱获取 %d 个稳定模式用于人格档案", len(kg_patterns))
+        except Exception as e:
+            logger.debug("KG patterns unavailable: %s", e)
+
+        profile_generated = self._generate_personality_profile(important, kg_patterns)
 
         self._last = datetime.now()
         self._count += 1
@@ -91,8 +100,15 @@ class MemoryConsolidator:
             "personality_profile_updated": profile_generated,
         }
 
-    def _generate_personality_profile(self, important_memories) -> bool:
-        """Use LLM to generate PERSONALITY.yaml from high-importance memories."""
+    def _generate_personality_profile(self, important_memories,
+                                       kg_patterns=None) -> bool:
+        """Use LLM to generate PERSONALITY.yaml from high-importance memories
+        and stable KG patterns (if available).
+
+        Args:
+            important_memories: Chronos replay buffer entries
+            kg_patterns: Optional list of dicts from InternalizationManager
+        """
         try:
             import llm_client
             if not llm_client.is_available():
@@ -106,7 +122,23 @@ class MemoryConsolidator:
             for m in sorted(important_memories, key=lambda x: x.importance, reverse=True)[:30]
         )
 
-        prompt = _PERSONALITY_PROMPT.format(count=len(important_memories), memories=memories_text)
+        kg_section = ""
+        if kg_patterns:
+            kg_lines = []
+            for p in kg_patterns[:20]:
+                kg_lines.append(
+                    f"[{p['type']}] (置信度 {p.get('confidence', 0):.2f}, "
+                    f"成熟度 {p.get('maturity', 0):.2f}) {p['content'][:200]}"
+                )
+            kg_section = (
+                "\n\n已验证的稳定模式（来自知识图谱，高成熟度）：\n"
+                + "\n".join(kg_lines)
+            )
+
+        prompt = _PERSONALITY_PROMPT.format(
+            count=len(important_memories),
+            memories=memories_text + kg_section,
+        )
         result = llm_client.generate(
             prompt=prompt,
             system="只输出 YAML 格式内容，不要添加任何前缀、后缀或代码块标记。",

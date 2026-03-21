@@ -27,6 +27,7 @@ class SecondBrainConfig(BaseSettings):
 
     tracker_path: Optional[Path] = None
     insights_path: Optional[Path] = None
+    kg_path: Optional[Path] = None
 
     vitality_half_life_days: float = 30.0
     dormancy_importance_threshold: float = 0.7
@@ -41,6 +42,10 @@ class SecondBrainConfig(BaseSettings):
     insight_novelty_threshold: int = 4
 
     max_search_candidates: int = 20
+
+    relation_extraction_min_importance: float = 0.4
+    kg_candidate_top_k: int = 20
+    kg_maturity_threshold: float = 0.7
 
     @field_validator("vitality_half_life_days")
     @classmethod
@@ -61,9 +66,11 @@ class SecondBrainConfig(BaseSettings):
             self.tracker_path = self.base_dir / "tracker"
         if self.insights_path is None:
             self.insights_path = self.base_dir / "insights"
+        if self.kg_path is None:
+            self.kg_path = self.base_dir / "kg"
 
     def ensure_dirs(self):
-        for d in [self.tracker_path, self.insights_path]:
+        for d in [self.tracker_path, self.insights_path, self.kg_path]:
             if d is not None:
                 d.mkdir(parents=True, exist_ok=True)
 

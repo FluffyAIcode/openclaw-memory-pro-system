@@ -15,6 +15,7 @@ memory/chronos/
 memory/msa/
 memory/tracker/
 memory/insights/
+memory/kg/
 memory/daily/
 memory/*.md
 memory/heartbeat-state.json

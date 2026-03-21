@@ -1,11 +1,15 @@
-"""Collision Engine — 5 strategies across all memory layers.
+"""Collision Engine — 7 strategies across all memory layers + knowledge graph.
 
-Strategies:
-  1. semantic_bridge:   Memora → Memora (moderate cosine similarity)
-  2. dormant_revival:   dormant memory → recent memory
-  3. temporal_echo:     today → 7/30 days ago
-  4. chronos_crossref:  Chronos structured facts/preferences → recent Memora
-  5. digest_bridge:     Long-term digest theme → recent raw memory
+RAG-based strategies (find connections by similarity):
+  1. semantic_bridge:     Memora → Memora (moderate cosine similarity)
+  2. dormant_revival:     dormant memory → recent memory
+  3. temporal_echo:       today → 7/30 days ago
+  4. chronos_crossref:    Chronos structured facts/preferences → recent Memora
+  5. digest_bridge:       Long-term digest theme → recent raw memory
+
+KG-based strategies (find connections by logical reasoning — RAG cannot do this):
+  6. contradiction_based: KG contradiction edges → decisions at risk
+  7. blind_spot_based:    KG absence reasoning → unexplored dimensions
 """
 
 import json
@@ -177,6 +181,8 @@ class CollisionEngine:
     def collide_round(self, pool: Dict[str, List[dict]]) -> List[Insight]:
         """Execute one round of collisions across the memory pool.
 
+        Uses adaptive strategy weights for selection when available.
+
         Args:
             pool: dict with keys memora_vectors, chronos_encoded, digests, msa_docs
         """
@@ -192,18 +198,32 @@ class CollisionEngine:
             logger.warning("Too few memories (%d) for collision", len(all_flat))
             return []
 
-        strategies = [
-            ("semantic_bridge", self._semantic_bridge),
-            ("chronos_crossref", self._chronos_crossref),
-            ("digest_bridge", self._digest_bridge),
-            ("dormant_revival", self._dormant_revival),
-            ("temporal_echo", self._temporal_echo),
-        ]
+        all_strategies = {
+            "semantic_bridge": self._semantic_bridge,
+            "chronos_crossref": self._chronos_crossref,
+            "digest_bridge": self._digest_bridge,
+            "dormant_revival": self._dormant_revival,
+            "temporal_echo": self._temporal_echo,
+            "contradiction_based": self._contradiction_based,
+            "blind_spot_based": self._blind_spot_based,
+        }
+
+        try:
+            from .strategy_weights import strategy_weights
+            ordered = strategy_weights.select_strategies(
+                n=len(all_strategies),
+                available=list(all_strategies.keys()),
+            )
+        except Exception:
+            ordered = list(all_strategies.keys())
 
         insights = []
-        for name, strategy_fn in strategies:
+        for name in ordered:
             if len(insights) >= config.collisions_per_round:
                 break
+            strategy_fn = all_strategies.get(name)
+            if strategy_fn is None:
+                continue
             try:
                 pair = strategy_fn(pool, all_flat)
                 if pair is None:
@@ -373,6 +393,79 @@ class CollisionEngine:
             return None
 
         return random.choice(recent), random.choice(echoes)
+
+    # ── Strategy 6: Contradiction-Based (KG-driven) ────────────
+
+    def _contradiction_based(self, pool: Dict[str, List[dict]],
+                              all_flat: List[dict]) -> Optional[Tuple[dict, dict]]:
+        """Use KG contradiction edges to find decisions at risk.
+
+        This is fundamentally different from RAG: it uses typed logical
+        relationships, not cosine similarity.
+        """
+        try:
+            from .inference import inference_engine
+            reports = inference_engine.scan_contradictions()
+            if not reports:
+                return None
+
+            report = reports[0]
+            if not report.contradicting:
+                return None
+
+            mem_a = {
+                "content": report.decision.content,
+                "timestamp": report.decision.created_at,
+                "source_system": "kg_decision",
+                "importance": report.decision.importance,
+            }
+            contra = report.contradicting[0]
+            mem_b = {
+                "content": contra["content"],
+                "timestamp": "",
+                "source_system": "kg_contradiction",
+                "importance": contra.get("weight", 0.7),
+            }
+            return mem_a, mem_b
+        except Exception as e:
+            logger.warning("contradiction_based strategy failed: %s", e)
+            return None
+
+    # ── Strategy 7: Blind Spot-Based (KG-driven) ─────────────
+
+    def _blind_spot_based(self, pool: Dict[str, List[dict]],
+                           all_flat: List[dict]) -> Optional[Tuple[dict, dict]]:
+        """Use KG absence reasoning to surface unexplored dimensions.
+
+        This is something RAG fundamentally cannot do: detect what is MISSING.
+        """
+        try:
+            from .inference import inference_engine
+            reports = inference_engine.detect_all_blind_spots()
+            if not reports:
+                return None
+
+            report = reports[0]
+            if not report.missing_dimensions:
+                return None
+
+            mem_a = {
+                "content": report.decision.content,
+                "timestamp": report.decision.created_at,
+                "source_system": "kg_decision",
+                "importance": report.decision.importance,
+            }
+            missing = "、".join(report.missing_dimensions[:4])
+            mem_b = {
+                "content": f"[盲区] 关于这个决策，以下维度尚未被考虑: {missing}",
+                "timestamp": datetime.now().isoformat(),
+                "source_system": "kg_blindspot",
+                "importance": 0.9,
+            }
+            return mem_a, mem_b
+        except Exception as e:
+            logger.warning("blind_spot_based strategy failed: %s", e)
+            return None
 
     # ── Insight Generation ────────────────────────────────────
 
