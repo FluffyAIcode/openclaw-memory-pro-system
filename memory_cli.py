@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
 """
-memory-cli — Thin HTTP client for the Memory Server.
+memory-cli — Your AI memory assistant.
 
-No heavy dependencies (no SentenceTransformer, no numpy at import time).
-Just sends JSON requests to localhost:18790 and prints results.
-
-Usage:
-    memory-cli remember "content" [-i 0.8] [-s source]
-    memory-cli recall "query" [-k 8]
-    memory-cli deep-recall "query" [-r 3]
-    memory-cli search "query" [-k 8]
-    memory-cli add "content" [-i 0.8] [-s source]
-    memory-cli digest [--days 7]
-    memory-cli status
-    memory-cli health
-    memory-cli server-start
-    memory-cli server-stop
+Quick start:
+    memory-cli server-start          # Start the memory server
+    memory-cli remember "something"  # Save a memory
+    memory-cli recall "keyword"      # Search your memories
+    memory-cli briefing              # Get today's summary
+    memory-cli status                # Check system status
 """
 
 import argparse
@@ -44,8 +36,9 @@ def _post(path: str, data: dict, timeout: int = 120) -> dict:
         with urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except URLError as e:
-        print(f"Error: Memory Server not reachable ({e})", file=sys.stderr)
-        print("Start it with: memory-cli server-start", file=sys.stderr)
+        print(f"\n  连接失败: Memory Server 未响应", file=sys.stderr)
+        print(f"  请先启动: memory-cli server-start", file=sys.stderr)
+        print(f"  然后等待约 3 分钟加载模型，再运行: memory-cli health\n", file=sys.stderr)
         sys.exit(1)
 
 
@@ -55,13 +48,13 @@ def _get(path: str, timeout: int = 30) -> dict:
         with urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except URLError as e:
-        print(f"Error: Memory Server not reachable ({e})", file=sys.stderr)
-        print("Start it with: memory-cli server-start", file=sys.stderr)
+        print(f"\n  连接失败: Memory Server 未响应", file=sys.stderr)
+        print(f"  请先启动: memory-cli server-start", file=sys.stderr)
+        print(f"  然后等待约 3 分钟加载模型，再运行: memory-cli health\n", file=sys.stderr)
         sys.exit(1)
 
 
 def _post_async(path: str, data: dict, label: str = "") -> dict:
-    """Submit a slow request asynchronously and poll until done."""
     import time as _time
 
     data["async"] = True
@@ -101,61 +94,68 @@ def _post_async(path: str, data: dict, label: str = "") -> dict:
             poll_interval = min(poll_interval + 0.5, 5.0)
 
 
+# ── Daily commands ────────────────────────────────────────
+
 def cmd_remember(args):
-    result = _post("/remember", {
+    payload = {
         "content": args.content,
         "source": args.source,
         "importance": args.importance,
         "doc_id": args.doc_id,
         "title": args.title,
-    })
-    systems = result.get("systems_used", [])
-    print(f"Remembered ({result.get('word_count', '?')} words) via: {', '.join(systems)}")
+    }
+    if args.tag:
+        payload["tag"] = args.tag
+    result = _post("/remember", payload)
+    tag_label = f" #{args.tag}" if args.tag else ""
+    print(f"  ✓ 已记住{tag_label}")
 
 
 def cmd_recall(args):
     result = _post("/recall", {"query": args.query, "top_k": args.top_k})
     merged = result.get("merged", [])
     if not merged:
-        print("No results found.")
+        print("  没有找到相关记忆。试试换个关键词？")
         return
+    print(f"  找到 {len(merged)} 条相关记忆:\n")
     for i, r in enumerate(merged, 1):
-        sys_tag = r.get("system", r.get("metadata", {}).get("source", "?"))
         score = r.get("score", 0)
         content = r.get("content", "")[:200]
-        print(f"  [{i}] (score={score:.4f}, system={sys_tag})")
+        ts = r.get("metadata", {}).get("timestamp", r.get("timestamp", ""))
+        date = ts[:10] if ts else ""
+        bar = "█" * max(1, int(score * 10))
+        date_label = f" ({date})" if date else ""
+        print(f"  [{i}] {bar} {score:.0%}{date_label}")
         print(f"      {content}")
         print()
 
 
 def cmd_deep_recall(args):
     result = _post_async("/deep-recall", {"query": args.query, "max_rounds": args.max_rounds},
-                         label="深度召回")
+                         label="深度搜索")
     interleave = result.get("interleave")
     if interleave:
-        print(f"Multi-hop reasoning: {interleave.get('rounds', '?')} rounds, "
-              f"{interleave.get('total_docs_used', '?')} documents used")
         answer = interleave.get("final_answer", "")
         if answer:
             print(f"\n{answer[:2000]}")
     else:
-        print("MSA interleave not available.")
+        print("  深度搜索暂无结果（需要更多长文档记忆）")
 
     ctx = result.get("memora_context", [])
     if ctx:
-        print(f"\n--- Memora context ({len(ctx)} snippets) ---")
+        print(f"\n  --- 相关片段 ({len(ctx)} 条) ---")
         for r in ctx[:3]:
-            print(f"  [{r.get('score', 0):.4f}] {r.get('content', '')[:150]}")
+            print(f"  • {r.get('content', '')[:150]}")
 
 
 def cmd_search(args):
     result = _post("/search", {"query": args.query, "limit": args.top_k})
     entries = result.get("results", [])
     if not entries:
-        print("No results found.")
+        print("  没有找到相关记忆。")
         return
     for i, r in enumerate(entries, 1):
-        print(f"  [{i}] (score={r.get('score', 0):.4f}) {r.get('content', '')[:200]}")
+        print(f"  [{i}] ({r.get('score', 0):.0%}) {r.get('content', '')[:200]}")
 
 
 def cmd_add(args):
@@ -164,60 +164,108 @@ def cmd_add(args):
         "source": args.source,
         "importance": args.importance,
     })
-    print(f"Added: {result.get('timestamp', '?')} [{result.get('source', '?')}]")
+    print(f"  ✓ 已添加")
 
 
 def cmd_digest(args):
-    result = _post_async("/digest", {"days": args.days}, label="记忆提炼")
+    result = _post_async("/digest", {"days": args.days}, label="记忆总结")
     if result.get("success"):
-        print(f"Digest complete (last {args.days} days)")
+        print(f"  ✓ 已生成最近 {args.days} 天的记忆总结")
     else:
-        print("Digest failed")
+        print("  总结生成失败")
 
 
 def cmd_status(args):
     result = _get("/status")
     server = result.get("server", {})
-    print(f"Memory Server: uptime={server.get('uptime_seconds', '?')}s, "
-          f"embedder={server.get('embedder', '?')}")
+    uptime = server.get("uptime_seconds", 0)
+    hrs = uptime // 3600
+    mins = (uptime % 3600) // 60
+
+    print(f"  服务状态: 运行中 ({hrs}小时{mins}分)")
+    print(f"  嵌入模型: {server.get('embedder', '?')}")
     print()
     for name, info in result.get("systems", {}).items():
         if isinstance(info, dict) and "error" not in info:
-            print(f"  {name}: {json.dumps(info, ensure_ascii=False)}")
+            if name == "memora":
+                print(f"  记忆库: {info.get('entries', 0)} 条记忆")
+            elif name == "chronos":
+                print(f"  训练缓冲: {info.get('buffer_size', 0)} 条候选")
+                nb = info.get("nebius", {})
+                if nb:
+                    print(f"  Nebius微调: {'已配置' if nb.get('configured') else '未配置'}")
+            elif name == "msa":
+                print(f"  长文档库: {info.get('document_count', 0)} 篇文档")
         elif isinstance(info, dict):
-            print(f"  {name}: ERROR — {info.get('error', '?')}")
-        else:
-            print(f"  {name}: {info}")
+            print(f"  {name}: 异常 — {info.get('error', '?')}")
 
 
 def cmd_health(args):
     result = _get("/health")
     status = result.get("status", "unknown")
     uptime = result.get("uptime_seconds", "?")
-    embedder = result.get("embedder", "?")
     pid = result.get("pid", "?")
-    print(f"Status: {status} | PID: {pid} | Uptime: {uptime}s | Embedder: {embedder}")
+    icon = "✓" if status == "ok" else "✗"
+    print(f"  {icon} 服务正常 | PID {pid} | 已运行 {uptime}s")
 
 
-def cmd_server_start(args):
-    pid_file = _WORKSPACE / "memory" / "server.pid"
-    if pid_file.exists():
-        pid = pid_file.read_text().strip()
-        try:
-            os.kill(int(pid), 0)
-            print(f"Memory Server already running (PID {pid})")
-            return
-        except (OSError, ValueError):
-            pid_file.unlink()
+def cmd_briefing(args):
+    result = _get("/briefing")
+    print(result.get("text", "无法生成简报"))
 
-    server_path = _WORKSPACE / "memory_server.py"
-    proc = subprocess.Popen(
-        [sys.executable, str(server_path), "--daemon"],
-        cwd=str(_WORKSPACE),
-    )
-    proc.wait()
-    print("Memory Server starting... use 'memory-cli health' to check.")
 
+# ── Skills commands ───────────────────────────────────────
+
+def cmd_skills(args):
+    result = _get("/skills")
+    skills = result.get("skills", [])
+    if not skills:
+        print("  还没有注册任何技能。用 memory-cli skill-add 创建第一个。")
+        return
+    print(f"  共 {len(skills)} 个技能:\n")
+    status_icon = {"draft": "📝", "active": "✅", "deprecated": "🚫"}
+    for s in skills:
+        icon = status_icon.get(s.get("status", ""), "?")
+        print(f"  {icon} {s['name']} (v{s.get('version', 1)}) [{s['id']}]")
+        if s.get("tags"):
+            print(f"     标签: {', '.join(s['tags'])}")
+
+
+def cmd_skill_add(args):
+    result = _post("/skills/add", {
+        "name": args.name,
+        "content": args.content,
+        "tags": args.tags.split(",") if args.tags else [],
+    })
+    if "error" in result:
+        print(f"  ✗ {result['error']}")
+    else:
+        print(f"  ✓ 技能已创建: {result.get('name', '')} [{result.get('id', '')}] (草稿)")
+
+
+def cmd_skill_promote(args):
+    result = _post("/skills/promote", {"skill_id": args.skill_id})
+    if "error" in result:
+        print(f"  ✗ {result['error']}")
+    else:
+        print(f"  ✓ 技能已激活: {result.get('name', '')}")
+
+
+def cmd_skill_deprecate(args):
+    result = _post("/skills/deprecate", {"skill_id": args.skill_id})
+    if "error" in result:
+        print(f"  ✗ {result['error']}")
+    else:
+        print(f"  ✓ 技能已废弃: {result.get('name', '')}")
+
+
+def cmd_training_export(args):
+    result = _post("/training/export", {})
+    path = result.get("dataset_path", "")
+    print(f"  ✓ 训练数据已导出: {path}")
+
+
+# ── Second Brain commands ─────────────────────────────────
 
 def cmd_collide(args):
     result = _post_async("/second-brain/collide", {}, label="灵感碰撞")
@@ -254,7 +302,7 @@ def cmd_sb_report(args):
               f"{d.get('content', '')[:80]}")
     trends = result.get("trending", [])
     if trends:
-        print(f"近期趋势 (最近{3}天):")
+        print(f"近期趋势 (最近3天):")
         for t in trends:
             print(f"  - 命中 {t.get('hits', 0)} 次: {', '.join(t.get('queries', [])[:3])}")
     rins = result.get("recent_insights", [])
@@ -273,7 +321,7 @@ def cmd_tasks(args):
     result = _get("/tasks")
     tasks = result.get("tasks", [])
     if not tasks:
-        print("No active tasks.")
+        print("  没有正在运行的任务。")
         return
     for t in tasks:
         status = t.get("status", "?")
@@ -284,14 +332,6 @@ def cmd_tasks(args):
         print(f"  {icon} [{tid}] {name} — {status} ({elapsed:.0f}s)")
         if status == "error":
             print(f"    Error: {t.get('error', '')[:100]}")
-
-
-def cmd_briefing(args):
-    result = _get("/briefing")
-    print(result.get("text", "无法生成简报"))
-    dist = result.get("vitality_distribution", {})
-    if dist:
-        print(f"\n活力分布: 高={dist.get('high', 0)} 中={dist.get('medium', 0)} 低={dist.get('low', 0)}")
 
 
 def cmd_vitality(args):
@@ -349,34 +389,29 @@ def cmd_review_dormant(args):
     threshold = result.get("threshold_days", 14)
 
     if not memories and not never_count:
-        print(f"没有沉睡记忆（阈值: {threshold} 天未访问 + 重要性 >= {result.get('threshold_importance', 0.7)}）")
+        print(f"没有沉睡记忆 :)")
         return
 
     if memories:
-        print(f"🔇 {count} 条真正沉睡的记忆（曾被访问，但超过 {threshold} 天未再访问）:\n")
+        print(f"🔇 {count} 条记忆已沉睡超过 {threshold} 天:\n")
         for i, m in enumerate(memories, 1):
             days = m.get("dormant_days", 0)
-            imp = m.get("importance", 0)
-            layer = m.get("layer", "?")
             content = m.get("content", "")[:120]
-            print(f"  [{i}] {days}天未访问 | 重要性={imp:.2f} | 来源={layer}")
+            print(f"  [{i}] {days}天未访问")
             print(f"      {content}")
             print()
-    else:
-        print("没有真正沉睡的记忆（所有曾访问过的记忆都在活跃状态）。")
 
     never = result.get("never_accessed", [])
     if never:
-        print(f"\n📭 另有 {never_count} 条重要记忆从未被召回（最早的 {len(never)} 条）:\n")
+        print(f"\n📭 另有 {never_count} 条记忆从未被召回:\n")
         for i, m in enumerate(never, 1):
             days = m.get("dormant_days", 0)
-            imp = m.get("importance", 0)
             content = m.get("content", "")[:100]
-            print(f"  [{i}] 创建 {days} 天 | 重要性={imp:.2f}")
+            print(f"  [{i}] 已存在 {days} 天")
             print(f"      {content}")
             print()
 
-    print("提示: 用 memory-cli recall \"关键词\" 可唤醒相关记忆")
+    print("  提示: 用 memory-cli recall \"关键词\" 可唤醒相关记忆")
 
 
 def cmd_contradictions(args):
@@ -384,74 +419,56 @@ def cmd_contradictions(args):
     count = result.get("count", 0)
     reports = result.get("reports", [])
     if not reports:
-        print("✅ 知识图谱中没有发现矛盾决策")
+        print("✅ 没有发现矛盾决策")
         return
-    print(f"⚠️ 发现 {count} 个存在矛盾证据的决策:\n")
+    print(f"⚠️ 发现 {count} 个矛盾:\n")
     for i, r in enumerate(reports, 1):
-        risk = r.get("risk_score", 0)
         decision = r.get("decision_content", "")[:120]
-        sc = r.get("supporting_count", 0)
-        cc = r.get("contradicting_count", 0)
-        print(f"  [{i}] 风险={risk:.1%} | 支撑={sc} | 矛盾={cc}")
-        print(f"      决策: {decision}")
+        print(f"  [{i}] {decision}")
         for c in r.get("contradicting", [])[:2]:
             print(f"      ❌ {c.get('content', '')[:100]}")
-            if c.get("evidence"):
-                print(f"         理由: {c['evidence']}")
         print()
 
 
 def cmd_blindspots(args):
     result = _get("/blindspots")
-    count = result.get("count", 0)
     reports = result.get("reports", [])
     if not reports:
-        print("✅ 没有发现明显的认知盲区")
+        print("✅ 没有发现认知盲区")
         return
-    print(f"🔍 发现 {count} 个决策存在未考虑的维度:\n")
+    print(f"🔍 发现 {len(reports)} 个待补充的决策:\n")
     for i, r in enumerate(reports, 1):
         decision = r.get("decision_content", "")[:120]
         missing = r.get("missing", [])
-        coverage = r.get("coverage_ratio", 0)
-        print(f"  [{i}] 覆盖率={coverage:.0%}")
-        print(f"      决策: {decision}")
-        print(f"      ⚠️ 未考虑: {', '.join(missing)}")
+        print(f"  [{i}] {decision}")
+        print(f"      未考虑: {', '.join(missing)}")
         print()
 
 
 def cmd_threads(args):
     result = _get("/threads")
-    count = result.get("count", 0)
     threads = result.get("threads", [])
     if not threads:
-        print("知识图谱中暂无思维线索（需要更多记忆来形成线索）")
+        print("  还没有形成思维线索（需要更多记忆）")
         return
-    print(f"🧵 发现 {count} 条思维线索:\n")
+    print(f"🧵 发现 {len(threads)} 条思维线索:\n")
     for i, t in enumerate(threads, 1):
         title = t.get("title", "未命名")
         nc = t.get("node_count", 0)
         status = t.get("status", "?")
-        dtype = t.get("dominant_type", "?")
-        status_icon = {"exploring": "🔎", "decided": "✅", "nascent": "🌱",
-                       "developing": "📈"}.get(status, "❓")
-        print(f"  [{i}] {status_icon} {title} ({nc} 个节点, 状态={status}, 主类型={dtype})")
+        icon = {"exploring": "🔎", "decided": "✅", "nascent": "🌱",
+                "developing": "📈"}.get(status, "❓")
+        print(f"  [{i}] {icon} {title} ({nc} 个知识点)")
 
 
 def cmd_kg_status(args):
     result = _get("/kg/status")
     nodes = result.get("total_nodes", 0)
     edges = result.get("total_edges", 0)
-    components = result.get("connected_components", 0)
-    print(f"📊 知识图谱状态:")
-    print(f"   节点: {nodes}")
-    print(f"   边:   {edges}")
-    print(f"   连通分量: {components}")
+    print(f"📊 知识图谱: {nodes} 个知识点, {edges} 条关联")
     nt = result.get("node_types", {})
     if nt:
-        print(f"   节点类型: {', '.join(f'{k}={v}' for k, v in nt.items())}")
-    et = result.get("edge_types", {})
-    if et:
-        print(f"   边类型:   {', '.join(f'{k}={v}' for k, v in et.items())}")
+        print(f"   类型: {', '.join(f'{k}={v}' for k, v in nt.items())}")
 
 
 def cmd_rate(args):
@@ -461,10 +478,7 @@ def cmd_rate(args):
         "rating": args.rating,
         "comment": args.comment,
     })
-    strategy = result.get("strategy", "?")
-    new_weight = result.get("new_weight", 0)
-    rating = result.get("rating", 0)
-    print(f"✅ 评分已记录: 策略={strategy}, 评分={rating}, 新权重={new_weight:.2f}")
+    print(f"  ✓ 评分已记录 ({args.rating}/5)")
 
 
 def cmd_insight_stats(args):
@@ -507,33 +521,15 @@ def cmd_session_context(args):
         print(f"📈 近期关注: {', '.join(focus)}")
         print()
 
-    contradictions = result.get("pending_contradictions", [])
-    if contradictions:
-        print("⚠️ 待解决矛盾:")
-        for c in contradictions:
-            print(f"   [{c.get('risk', 0):.0%}] {c.get('decision', '')}")
-        print()
-
     personality = result.get("personality_traits", "")
     if personality:
         print(f"🎭 人格特质: {personality[:200]}")
         print()
 
-    dormant = result.get("dormant_reminders", [])
-    if dormant:
-        print("💤 沉睡提醒:")
-        for d in dormant:
-            print(f"   • {d}")
-        print()
-
     milestones = result.get("milestones", {})
     days = milestones.get("days_since_first_memory")
-    convos = milestones.get("conversations_this_week")
     if days is not None:
-        parts = [f"记忆系统已运行 {days} 天"]
-        if convos:
-            parts.append(f"本周对话 {convos} 次")
-        print(f"🏆 {', '.join(parts)}")
+        print(f"🏆 记忆系统已运行 {days} 天")
 
 
 def cmd_bookmark(args):
@@ -542,135 +538,199 @@ def cmd_bookmark(args):
         "topics": args.topics.split(",") if args.topics else [],
     })
     if result.get("ok"):
-        print(f"📌 会话书签已保存 ({result.get('timestamp', '?')[:16]})")
+        print(f"  ✓ 书签已保存")
     else:
-        print("书签保存失败")
+        print("  ✗ 书签保存失败")
+
+
+# ── Server management ─────────────────────────────────────
+
+def cmd_server_start(args):
+    pid_file = _WORKSPACE / "memory" / "server.pid"
+    if pid_file.exists():
+        pid = pid_file.read_text().strip()
+        try:
+            os.kill(int(pid), 0)
+            print(f"  服务已在运行 (PID {pid})")
+            return
+        except (OSError, ValueError):
+            pid_file.unlink()
+
+    server_path = _WORKSPACE / "memory_server.py"
+    proc = subprocess.Popen(
+        [sys.executable, str(server_path), "--daemon"],
+        cwd=str(_WORKSPACE),
+    )
+    proc.wait()
+    print("  服务启动中... 首次启动需约 3 分钟加载模型")
+    print("  运行 memory-cli health 确认就绪")
 
 
 def cmd_server_stop(args):
     pid_file = _WORKSPACE / "memory" / "server.pid"
     if not pid_file.exists():
-        print("Memory Server not running (no PID file)")
+        print("  服务未运行")
         return
     pid = int(pid_file.read_text().strip())
     try:
         os.kill(pid, signal.SIGTERM)
-        print(f"Memory Server stopped (PID {pid})")
+        print(f"  ✓ 服务已停止 (PID {pid})")
     except OSError:
-        print(f"Process {pid} not found, cleaning up PID file")
+        print(f"  进程 {pid} 已不存在，已清理 PID 文件")
     if pid_file.exists():
         pid_file.unlink()
 
 
+# ── CLI argument parser ───────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(
         prog="memory-cli",
-        description="Thin client for OpenClaw Memory Server",
+        description="AI 记忆助手 — 帮你记住、回忆、整理碎片化知识",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+常用命令:
+  remember    记住一段内容        recall      搜索记忆
+  briefing    今日简报            status      系统状态
+
+技能管理:
+  skills      查看所有技能        skill-add   创建技能
+  skill-on    激活技能            skill-off   废弃技能
+
+更多: collide, threads, contradictions, blindspots, inspect, vitality
+""",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("remember", help="Smart ingestion via Memory Hub")
-    p.add_argument("content", help="Text to remember")
-    p.add_argument("-i", "--importance", type=float, default=0.7)
-    p.add_argument("-s", "--source", default="openclaw")
-    p.add_argument("-d", "--doc-id", default=None)
-    p.add_argument("-t", "--title", default=None)
+    # ── Daily (top 5) ────
+    p = sub.add_parser("remember", help="记住一段内容")
+    p.add_argument("content", help="要记住的文本")
+    p.add_argument("-i", "--importance", type=float, default=0.7, help="重要性 0-1 (默认 0.7)")
+    p.add_argument("-s", "--source", default="cli", help="来源标记")
+    p.add_argument("--tag", choices=["thought", "share", "reference", "to_verify"],
+                   default=None, help="内容标签: thought=思考 | share=分享 | reference=参考 | to_verify=待验证")
+    p.add_argument("-d", "--doc-id", default=None, help="文档ID (长文自动路由到MSA)")
+    p.add_argument("-t", "--title", default=None, help="文档标题")
     p.set_defaults(func=cmd_remember)
 
-    p = sub.add_parser("recall", help="Merged search across all systems")
-    p.add_argument("query", help="Search query")
-    p.add_argument("-k", "--top-k", type=int, default=8)
+    p = sub.add_parser("recall", help="搜索记忆")
+    p.add_argument("query", help="搜索关键词")
+    p.add_argument("-k", "--top-k", type=int, default=8, help="返回条数 (默认 8)")
     p.set_defaults(func=cmd_recall)
 
-    p = sub.add_parser("deep-recall", help="MSA multi-hop reasoning")
-    p.add_argument("query", help="Complex question")
+    p = sub.add_parser("briefing", help="今日记忆简报")
+    p.set_defaults(func=cmd_briefing)
+
+    p = sub.add_parser("status", help="系统状态")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("health", help="服务健康检查")
+    p.set_defaults(func=cmd_health)
+
+    # ── Ingest extras ────
+    p = sub.add_parser("deep-recall", help="深度搜索 (多轮推理)")
+    p.add_argument("query", help="复杂问题")
     p.add_argument("-r", "--max-rounds", type=int, default=3)
     p.set_defaults(func=cmd_deep_recall)
 
-    p = sub.add_parser("search", help="Memora vector search only")
-    p.add_argument("query", help="Search query")
+    p = sub.add_parser("search", help="向量搜索 (仅 Memora)")
+    p.add_argument("query", help="搜索关键词")
     p.add_argument("-k", "--top-k", type=int, default=8)
     p.set_defaults(func=cmd_search)
 
-    p = sub.add_parser("add", help="Add to Memora vector store")
-    p.add_argument("content", help="Text to add")
+    p = sub.add_parser("add", help="直接添加到向量库")
+    p.add_argument("content", help="要添加的文本")
     p.add_argument("-i", "--importance", type=float, default=0.7)
     p.add_argument("-s", "--source", default="cli")
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("digest", help="Run memory digest")
-    p.add_argument("--days", type=int, default=7)
+    p = sub.add_parser("digest", help="生成记忆总结")
+    p.add_argument("--days", type=int, default=7, help="总结最近几天 (默认 7)")
     p.set_defaults(func=cmd_digest)
 
-    p = sub.add_parser("status", help="All systems status")
-    p.set_defaults(func=cmd_status)
+    # ── Skills ────
+    p = sub.add_parser("skills", help="查看所有技能")
+    p.set_defaults(func=cmd_skills)
 
-    p = sub.add_parser("health", help="Server health check")
-    p.set_defaults(func=cmd_health)
+    p = sub.add_parser("skill-add", help="创建新技能")
+    p.add_argument("name", help="技能名称")
+    p.add_argument("content", help="技能内容/描述")
+    p.add_argument("--tags", default="", help="标签，逗号分隔")
+    p.set_defaults(func=cmd_skill_add)
 
-    p = sub.add_parser("collide", help="Run one round of inspiration collisions")
+    p = sub.add_parser("skill-on", help="激活技能")
+    p.add_argument("skill_id", help="技能 ID")
+    p.set_defaults(func=cmd_skill_promote)
+
+    p = sub.add_parser("skill-off", help="废弃技能")
+    p.add_argument("skill_id", help="技能 ID")
+    p.set_defaults(func=cmd_skill_deprecate)
+
+    p = sub.add_parser("training-export", help="导出训练数据 (JSONL)")
+    p.set_defaults(func=cmd_training_export)
+
+    # ── Second Brain ────
+    p = sub.add_parser("collide", help="灵感碰撞 (从记忆中发现联系)")
     p.set_defaults(func=cmd_collide)
 
-    p = sub.add_parser("deep-collide", help="MSA multi-hop deep inspiration")
-    p.add_argument("topic", nargs="?", default="", help="Optional focus topic")
+    p = sub.add_parser("deep-collide", help="深度碰撞 (多轮推理)")
+    p.add_argument("topic", nargs="?", default="", help="聚焦话题")
     p.set_defaults(func=cmd_deep_collide)
 
-    p = sub.add_parser("sb-report", help="Second Brain comprehensive report")
+    p = sub.add_parser("sb-report", help="第二大脑详细报告")
     p.set_defaults(func=cmd_sb_report)
 
-    p = sub.add_parser("sb-status", help="Second Brain quick status")
+    p = sub.add_parser("sb-status", help="第二大脑状态")
     p.set_defaults(func=cmd_sb_status)
 
-    p = sub.add_parser("briefing", help="Daily memory briefing")
-    p.set_defaults(func=cmd_briefing)
-
-    p = sub.add_parser("vitality", help="Memory vitality distribution")
+    p = sub.add_parser("vitality", help="记忆活力分布")
     p.set_defaults(func=cmd_vitality)
 
-    p = sub.add_parser("inspect", help="Inspect memory lifecycle")
-    p.add_argument("query", help="Topic or keyword to inspect")
+    p = sub.add_parser("inspect", help="查看记忆生命周期")
+    p.add_argument("query", help="要查看的记忆关键词")
     p.set_defaults(func=cmd_inspect)
 
-    p = sub.add_parser("review-dormant", help="List all dormant memories")
+    p = sub.add_parser("review-dormant", help="查看沉睡记忆")
     p.set_defaults(func=cmd_review_dormant)
 
-    p = sub.add_parser("tasks", help="List async tasks")
-    p.set_defaults(func=cmd_tasks)
-
-    p = sub.add_parser("contradictions", help="Scan KG for contradicted decisions")
+    p = sub.add_parser("contradictions", help="扫描知识矛盾")
     p.set_defaults(func=cmd_contradictions)
 
-    p = sub.add_parser("blindspots", help="Detect blind spots in decisions")
+    p = sub.add_parser("blindspots", help="检测认知盲区")
     p.set_defaults(func=cmd_blindspots)
 
-    p = sub.add_parser("threads", help="Discover thought threads from KG")
+    p = sub.add_parser("threads", help="发现思维线索")
     p.set_defaults(func=cmd_threads)
 
-    p = sub.add_parser("graph-status", help="Knowledge graph statistics")
+    p = sub.add_parser("graph-status", help="知识图谱统计")
     p.set_defaults(func=cmd_kg_status)
 
-    p = sub.add_parser("rate", help="Rate an insight (1-5)")
-    p.add_argument("insight_id", help="Insight ID or filename")
-    p.add_argument("rating", type=int, help="Rating 1-5 (5=best)")
-    p.add_argument("-s", "--strategy", default="", help="Strategy name")
-    p.add_argument("-c", "--comment", default="", help="Optional comment")
+    p = sub.add_parser("rate", help="给灵感评分 (1-5)")
+    p.add_argument("insight_id", help="灵感 ID")
+    p.add_argument("rating", type=int, help="评分 1-5")
+    p.add_argument("-s", "--strategy", default="")
+    p.add_argument("-c", "--comment", default="")
     p.set_defaults(func=cmd_rate)
 
-    p = sub.add_parser("insight-stats", help="Insight strategy statistics")
+    p = sub.add_parser("insight-stats", help="灵感策略统计")
     p.set_defaults(func=cmd_insight_stats)
 
-    p = sub.add_parser("session-context", help="Pre-built context for session startup")
+    p = sub.add_parser("session-context", help="会话上下文 (用于 Agent 启动)")
     p.set_defaults(func=cmd_session_context)
 
-    p = sub.add_parser("bookmark", help="Save conversation bookmark")
-    p.add_argument("summary", help="Conversation summary")
-    p.add_argument("-t", "--topics", default="", help="Comma-separated topics")
+    p = sub.add_parser("bookmark", help="保存会话书签")
+    p.add_argument("summary", help="对话摘要")
+    p.add_argument("-t", "--topics", default="", help="话题 (逗号分隔)")
     p.set_defaults(func=cmd_bookmark)
 
-    p = sub.add_parser("server-start", help="Start the Memory Server")
+    p = sub.add_parser("tasks", help="查看异步任务")
+    p.set_defaults(func=cmd_tasks)
+
+    # ── Server ────
+    p = sub.add_parser("server-start", help="启动服务")
     p.set_defaults(func=cmd_server_start)
 
-    p = sub.add_parser("server-stop", help="Stop the Memory Server")
+    p = sub.add_parser("server-stop", help="停止服务")
     p.set_defaults(func=cmd_server_stop)
 
     args = parser.parse_args()

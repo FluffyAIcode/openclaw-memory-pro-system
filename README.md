@@ -1,6 +1,21 @@
 # OpenClaw Memory Pro System
 
-A production-grade cognitive architecture for the [OpenClaw](https://github.com/nicholasgasior/openclaw) AI agent framework. Four interconnected subsystems turn passive conversation logging into semantic retrieval, continual learning, document-level reasoning, and autonomous inspiration generation — with a **Knowledge Graph** inside Second Brain providing structured logical reasoning that RAG alone cannot achieve.
+**一句话：** 帮你把碎片化的想法、笔记、聊天记录自动整理成可搜索的长期记忆，并在合适的时候提醒你。
+
+> An AI memory assistant that turns fragmented notes and conversations into searchable long-term memory, with automatic summarization, knowledge graph reasoning, and proactive reminders.
+
+### 30 秒上手
+
+```bash
+pip install -e .                       # 安装
+memory-cli server-start                # 启动（首次需等待 ~3 分钟加载模型）
+memory-cli health                      # 确认就绪
+memory-cli remember "今天学到了 X"      # 记住
+memory-cli recall "X"                  # 回忆
+memory-cli briefing                    # 今日简报
+```
+
+---
 
 **目录：** [产品目标](#产品目标) · [当前已满足与差距](#当前已满足与差距) · [Architecture](#architecture) · [Quick Start](#quick-start)
 
@@ -178,44 +193,41 @@ Strategy weights persist in `memory/insights/strategy_weights.json`. Strategies 
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.9+
-- macOS (tested on Mac mini M-series) or Linux
-
-### Installation
+### 1. 安装
 
 ```bash
-cd /path/to/openclaw-memory-pro-system
-
-# Core install
-pip install -e .
-
-# With embedding model support (recommended)
-pip install -e ".[embeddings]"
-
-# Full install (includes torch, streamlit)
-pip install -e ".[full]"
+cd ~/.openclaw/workspace   # 或你的项目目录
+pip install -e .           # 基础安装
+pip install -e ".[embeddings]"  # 推荐：安装真实嵌入模型
 ```
 
-### Environment
+**环境要求：** Python 3.9+, macOS (Mac mini M 系列) 或 Linux
 
-Create `~/.openclaw/.env`:
+### 2. 配置 (可选)
+
+创建 `~/.openclaw/.env`：
 
 ```
 XAI_API_KEY=your-xai-api-key-here
 ```
 
-The LLM client (xAI Grok) powers digest summarization, multi-hop reasoning, personality generation, and inspiration collision. Without it, these features gracefully degrade to heuristic fallbacks.
+xAI Grok API 用于记忆总结、灵感碰撞、人格生成。**不配置也能用**，只是这些高级功能会降级为本地启发式方法。
 
-### Start the Memory Server
+### 3. 启动服务
 
 ```bash
-# Daemon mode (recommended)
-python3 memory_server.py --daemon
+memory-cli server-start    # 后台启动
+memory-cli health          # 确认就绪（首次约 3 分钟加载嵌入模型）
+```
 
-# Or foreground
-python3 memory_server.py
+### 4. 开始使用
+
+```bash
+memory-cli remember "今天学到了 Transformer 的多头注意力机制" --tag thought
+memory-cli recall "注意力机制"
+memory-cli briefing
+memory-cli skills           # 查看技能
+memory-cli --help           # 查看所有命令
 ```
 
 The server loads the SentenceTransformer model once (~3s), then serves all requests with <100ms latency.

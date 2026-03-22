@@ -687,13 +687,13 @@ class TestMemoryCLISecondBrain:
         from memory_cli import cmd_briefing
         with patch("memory_cli._get") as mock_get:
             mock_get.return_value = {
-                "text": "☀️ 2026-01-01 记忆简报\n\n🧠 记忆总量 10 条",
+                "text": "☀️ 2026-01-01 记忆简报\n\n🧠 你的记忆库有 10 条记忆",
                 "vitality_distribution": {"high": 3, "medium": 5, "low": 2},
             }
             cmd_briefing(None)
             out = capsys.readouterr().out
             assert "记忆简报" in out
-            assert "高=3" in out
+            assert "10 条记忆" in out
 
     def test_cmd_vitality(self, capsys):
         from memory_cli import cmd_vitality
@@ -760,7 +760,7 @@ class TestMemoryCLISecondBrain:
             }
             cmd_review_dormant(None)
             out = capsys.readouterr().out
-            assert "2 条真正沉睡" in out
+            assert "2 条记忆已沉睡" in out
             assert "old memory" in out
             assert "20天未访问" in out
 
@@ -835,8 +835,8 @@ class TestBridgeDailyBriefing:
             assert result["insight_count"] == 3
             assert result["dormant_count"] == 1
             assert result["trend_count"] == 1
-            assert "灵感碰撞" in result["text"]
-            assert "沉睡" in result["text"]
+            assert "联系" in result["text"]
+            assert "没被用到" in result["text"]
         finally:
             bmod.tracker = old
 

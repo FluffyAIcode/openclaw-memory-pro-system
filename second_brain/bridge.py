@@ -161,43 +161,56 @@ class SecondBrainBridge:
 
         sections = []
 
-        if recent_insights:
-            total_insights = sum(i.get("insight_count", 0) for i in recent_insights)
-            section = f"💡 昨夜灵感碰撞产生了 {total_insights} 条新发现"
-            for ins in recent_insights[:2]:
-                preview = ins.get("preview", "")
-                for line in preview.split("\n"):
-                    if line.strip().startswith("**记忆 A**") or line.strip().startswith("### 灵感"):
-                        continue
-                    if "联系发现" in line or "联系:" in line:
-                        section += f"\n  • {line.strip().lstrip('#').strip()[:120]}"
-                        break
-            sections.append(section)
-
-        if dormant:
-            section = f"🔇 {len(dormant)} 条重要记忆已沉睡超过 {config.dormancy_age_days} 天："
-            for d in dormant[:3]:
-                days = d.get("dormant_days", 0)
-                content = d.get("content", "")[:60]
-                section += f"\n  • ({days}天未访问) {content}"
-            section += "\n  → 回复「review-dormant」可查看完整列表"
-            sections.append(section)
-
-        if trends:
-            section = "📈 近 3 天你最关注的话题："
-            tags = []
-            for t in trends[:3]:
-                queries = t.get("queries", [])
-                label = queries[0] if queries else f"memory #{t.get('id', '?')[:8]}"
-                tags.append(f"{label} ({t['hits']}次)")
-            section += "、".join(tags)
-            sections.append(section)
-
         total = len(all_entries)
         high = len(vitality_buckets["high"])
+        medium = len(vitality_buckets["medium"])
         low = len(vitality_buckets["low"])
-        section = f"🧠 记忆总量 {total} 条 | 高活力 {high} | 低活力 {low}"
-        sections.append(section)
+        sections.append(f"🧠 你的记忆库有 {total} 条记忆，其中 {high} 条活跃")
+
+        if trends:
+            seen = set()
+            tags = []
+            for t in trends[:5]:
+                queries = t.get("queries", [])
+                label = queries[0] if queries else ""
+                if label and label not in seen:
+                    seen.add(label)
+                    tags.append(label)
+            if tags:
+                sections.append(f"📈 最近你在关注: {' · '.join(tags[:3])}")
+
+        if recent_insights:
+            total_insights = sum(i.get("insight_count", 0) for i in recent_insights)
+            if total_insights > 0:
+                best_lines = []
+                for ins in recent_insights:
+                    preview = ins.get("preview", "")
+                    in_connection = False
+                    for line in preview.split("\n"):
+                        stripped = line.strip()
+                        if stripped.startswith("## 联系发现") or stripped.startswith("## 联系"):
+                            in_connection = True
+                            continue
+                        if stripped.startswith("## "):
+                            in_connection = False
+                            continue
+                        if in_connection and len(stripped) > 15:
+                            best_lines.append(stripped[:100])
+                            break
+                section = f"💡 昨天发现了 {total_insights} 个新联系"
+                for bl in best_lines[:2]:
+                    section += f"\n  • {bl}"
+                sections.append(section)
+
+        if dormant:
+            section = f"💤 {len(dormant)} 条记忆超过 {config.dormancy_age_days} 天没被用到"
+            for d in dormant[:2]:
+                content = d.get("content", "")[:50]
+                section += f"\n  • {content}..."
+            sections.append(section)
+
+        if low > 0 and low > high:
+            sections.append(f"📌 提示: {low} 条记忆活力较低，试试 recall 唤醒它们")
 
         today = datetime.now().strftime("%Y-%m-%d")
         text = f"☀️ {today} 记忆简报\n\n" + "\n\n".join(sections)
@@ -505,7 +518,7 @@ class SecondBrainBridge:
                 results.append({
                     "date": f.stem,
                     "insight_count": block_count,
-                    "preview": text[:300],
+                    "preview": text[:800],
                 })
             except (ValueError, OSError):
                 continue
