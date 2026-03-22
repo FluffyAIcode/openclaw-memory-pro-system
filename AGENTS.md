@@ -36,19 +36,56 @@ You wake up fresh each session. These files are your continuity:
 
 - **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) — raw logs of what happened (full record, no filtering)
 - **Long-term:** `MEMORY.md` — your curated memories, like a human's long-term memory
-- **Memory Server（推荐）:** 记忆系统现在有一个常驻 HTTP 服务，模型只加载一次，响应 <100ms。用 `memory-cli` 命令代替 `python3 -m`：
-  - `memory-cli remember "内容" -i 0.8` — 自动路由到 Memora/MSA/Chronos
-  - `memory-cli recall "问题"` — 跨系统合并搜索
-  - `memory-cli deep-recall "复杂问题"` — MSA 多跳推理（现在接入 LLM 生成）
-  - `memory-cli search "关键词"` — Memora 语义搜索
-  - `memory-cli status` — 查看所有系统状态
-  - `memory-cli health` — 检查服务器状态
-  - 如果服务没启动：`memory-cli server-start`
-- **Memora 增强记忆:** 语义搜索历史记忆。`memory-cli search "关键词"` 或 `memory-cli add "内容" -i 0.9`。详见 `skills/memora/SKILL.md`。
-- **Chronos 持续学习:** 将核心知识内化，并在巩固时生成 `PERSONALITY.yaml` 人格档案（通过 LLM 从高重要性记忆中提炼）。巩固命令：`python3 -m chronos consolidate`。详见 `skills/chronos/SKILL.md`。
-- **MSA 稀疏注意力记忆:** 文档级路由检索 + 多跳推理（现已接入 LLM）。`memory-cli deep-recall "复杂问题"`。详见 `skills/msa/SKILL.md`。
-- **第二大脑（记忆追踪 + 灵感碰撞）:** 自动追踪记忆访问模式，检测沉睡记忆和趋势，定期碰撞不同记忆产生灵感。`memory-cli collide` 执行碰撞，`memory-cli sb-report` 查看报告。详见 `skills/second-brain/SKILL.md`。
-- **直接 CLI（无需 Server 也可用）:** `python3 -m memora/chronos/msa/second_brain` 命令仍然有效，但启动较慢（每次加载模型 10-30s）。推荐用 memory-cli。
+
+### Memory Server（推荐）
+
+记忆系统有一个常驻 HTTP 服务，嵌入模型只加载一次，响应 <100ms。用 `memory-cli` 命令：
+
+**日常命令：**
+- `memory-cli remember "内容" --tag thought -i 0.8` — 记住（自动路由到 Memora/MSA + KG 抽取）
+  - `--tag` 标签: `thought`=思考 | `share`=分享 | `reference`=参考 | `to_verify`=待验证
+- `memory-cli recall "关键词"` — 跨系统搜索（Memora + MSA 合并结果）
+- `memory-cli deep-recall "复杂问题"` — MSA 多跳推理（LLM 生成中间答案）
+- `memory-cli briefing` — 每日简报（活跃记忆、近期关注、新发现、沉睡提醒）
+- `memory-cli status` — 系统状态
+- `memory-cli health` — 服务健康检查
+
+**技能管理：**
+- `memory-cli skills` — 查看所有技能
+- `memory-cli skill-add "名称" "内容" --tags "a,b"` — 创建技能（草稿状态）
+- `memory-cli skill-on <skill_id>` — 激活技能
+- `memory-cli skill-off <skill_id>` — 废弃技能
+
+**第二大脑：**
+- `memory-cli collide` — 灵感碰撞（7 策略自适应权重）
+- `memory-cli contradictions` — 扫描知识矛盾
+- `memory-cli blindspots` — 检测认知盲区
+- `memory-cli threads` — 发现思维线索
+- `memory-cli graph-status` — 知识图谱统计
+- `memory-cli rate <id> <1-5>` — 给灵感评分（调整策略权重）
+- `memory-cli sb-report` — 第二大脑详细报告
+
+**高级命令：**
+- `memory-cli search "关键词"` — 仅 Memora 向量搜索
+- `memory-cli add "内容" -i 0.9` — 直接添加到向量库
+- `memory-cli digest --days 7` — 生成记忆总结
+- `memory-cli training-export` — 导出训练数据 (JSONL)
+- `memory-cli inspect "关键词"` — 查看记忆生命周期
+- `memory-cli vitality` — 记忆活力分布
+- `memory-cli review-dormant` — 查看沉睡记忆
+- `memory-cli insight-stats` — 灵感策略统计
+
+**服务管理：**
+- 如果服务没启动：`memory-cli server-start`（首次 ~3 分钟加载模型）
+- 停止服务：`memory-cli server-stop`
+
+### 子系统说明
+
+- **Memora（统一语料库）:** 所有内容首先进入 Memora 向量库（nomic-embed-text）。支持语义搜索、去重。详见 `skills/memora/SKILL.md`。
+- **MSA（长文档存储）:** 超过 500 字的内容自动路由到 MSA。支持多跳推理 `deep-recall`。详见 `skills/msa/SKILL.md`。
+- **Second Brain（智能层）:** KG 织网（关系抽取 → 知识图谱）、蒸馏总结（每周 digest）、灵感碰撞（7 策略）、矛盾检测、盲区分析、思维线索发现。详见 `skills/second-brain/SKILL.md`。
+- **Skill Registry（技能层）:** 从记忆到可操作技能的桥梁，JSONL 持久化，支持 draft → active → deprecated 生命周期。
+- **Chronos（训练管线）:** Replay buffer → Distiller (JSONL 数据集) → 人格档案 (PERSONALITY.yaml) → Nebius 微调客户端 (骨架)。详见 `skills/chronos/SKILL.md`。
 
 Capture what matters. Decisions, context, things to remember. Skip the secrets unless asked to keep them.
 
@@ -232,7 +269,7 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 **When to reach out:**
 
 - Important email arrived
-- Calendar event coming up (&lt;2h)
+- Calendar event coming up (<2h)
 - Something interesting you found
 - It's been >8h since you said anything
 
@@ -241,7 +278,7 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 - Late night (23:00-08:00) unless urgent
 - Human is clearly busy
 - Nothing new since last check
-- You just checked &lt;30 minutes ago
+- You just checked <30 minutes ago
 
 **Proactive work you can do without asking:**
 
