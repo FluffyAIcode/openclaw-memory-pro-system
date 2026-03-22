@@ -226,13 +226,17 @@ class AutoIngestor:
 
     _STATE_FILE = "memory/ingestion_state.json"
     _HASHES_FILE = "memory/ingestion_hashes.json"
+    _MSA_STATE_FILE = "memory/msa_ingestion_state.json"
     _INTERVAL = 1800  # 30 minutes
+    _MSA_MIN_CHARS = 200
 
     def __init__(self):
         self._state_path = _WORKSPACE / self._STATE_FILE
         self._hashes_path = _WORKSPACE / self._HASHES_FILE
+        self._msa_state_path = _WORKSPACE / self._MSA_STATE_FILE
         self._state: Dict[str, int] = {}
         self._seen_hashes: set = set()
+        self._msa_state: Dict[str, int] = {}
         self._load_state()
 
     def _load_state(self):
@@ -246,6 +250,11 @@ class AutoIngestor:
                 self._seen_hashes = set(json.loads(self._hashes_path.read_text(encoding="utf-8")))
         except Exception:
             self._seen_hashes = set()
+        try:
+            if self._msa_state_path.exists():
+                self._msa_state = json.loads(self._msa_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            self._msa_state = {}
 
     def _save_state(self):
         try:
@@ -255,6 +264,9 @@ class AutoIngestor:
             )
             self._hashes_path.write_text(
                 json.dumps(list(self._seen_hashes), ensure_ascii=False), encoding="utf-8"
+            )
+            self._msa_state_path.write_text(
+                json.dumps(self._msa_state, ensure_ascii=False, indent=2), encoding="utf-8"
             )
         except Exception as e:
             logger.warning("AutoIngestor: failed to save state: %s", e)
@@ -319,8 +331,72 @@ class AutoIngestor:
             self._state[fname] = len(lines)
 
         if total_ingested > 0:
-            logger.info("AutoIngestor: ingested %d new paragraphs", total_ingested)
+            logger.info("AutoIngestor: ingested %d new paragraphs to Memora", total_ingested)
+
+        msa_ingested = self._sync_daily_to_msa(md_files)
+        if msa_ingested > 0:
+            logger.info("AutoIngestor: synced %d daily files to MSA", msa_ingested)
+
         self._save_state()
+
+    def _sync_daily_to_msa(self, md_files: list) -> int:
+        """Ingest each daily .md file as a whole MSA document for cross-day deep-recall.
+
+        After MSA ingestion, also trigger KG extraction on each chunk so the
+        knowledge graph can capture cross-day relationships.
+        """
+        synced = 0
+        for md_file in md_files:
+            fname = md_file.name
+            try:
+                content = md_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            file_size = len(content)
+            if file_size < self._MSA_MIN_CHARS:
+                continue
+
+            prev_size = self._msa_state.get(fname, 0)
+            if file_size <= prev_size:
+                continue
+
+            doc_id = f"daily-{md_file.stem}"
+            date_str = md_file.stem
+            try:
+                from msa.bridge import bridge as msa_bridge
+                result = msa_bridge.ingest_and_save(
+                    content,
+                    source="daily_log",
+                    doc_id=doc_id,
+                    metadata={"title": f"Daily Log {date_str}", "source": "daily_log", "date": date_str},
+                    cross_index=False,
+                    write_daily=False,
+                )
+                self._msa_state[fname] = file_size
+                synced += 1
+                logger.info("AutoIngestor: MSA synced %s (%d chars)", fname, file_size)
+
+                self._kg_extract_from_msa_doc(doc_id)
+            except Exception as e:
+                logger.warning("AutoIngestor: MSA sync failed for %s: %s", fname, e)
+
+        return synced
+
+    def _kg_extract_from_msa_doc(self, doc_id: str):
+        """Run KG extraction on each chunk of an MSA document (non-blocking)."""
+        try:
+            from msa.system import msa_system
+            chunks, _ = msa_system.memory_bank.load_document_content(doc_id)
+            if not chunks:
+                return
+            for chunk in chunks:
+                text = chunk.strip()
+                if len(text) >= 50:
+                    _kg_extract_async(text, 0.65)
+            logger.info("AutoIngestor: queued KG extraction for %s (%d chunks)", doc_id, len(chunks))
+        except Exception as e:
+            logger.warning("AutoIngestor: KG extract from MSA doc %s failed: %s", doc_id, e)
 
     def _split_paragraphs(self, lines: list) -> list:
         """Split lines into paragraphs using ### HH:MM:SS headers as delimiters."""
@@ -403,6 +479,10 @@ class Scheduler:
             "blindspot_scan": {
                 "interval": 604800,
                 "fn": self._task_blindspot_scan,
+            },
+            "skill_proposal": {
+                "interval": 86400,
+                "fn": self._task_skill_proposal,
             },
         }
 
@@ -583,6 +663,20 @@ class Scheduler:
         except Exception as e:
             logger.error("Blindspot scan failed: %s", e)
 
+    def _task_skill_proposal(self):
+        try:
+            from second_brain.skill_proposer import proposer
+            proposals = proposer.scan_and_propose(days=7)
+            if proposals:
+                text = f"🎯 *技能提名: {len(proposals)} 个新 draft skill*\n\n"
+                for p in proposals[:2]:
+                    scores = ", ".join(f"{k}={v}" for k, v in p.sources.items())
+                    text += f"*{p.title}*\n分数: {scores}\n\n"
+                text += "用 `memory-cli skills` 查看，`memory-cli skill-on <id>` 激活。"
+                self._pusher.push(text)
+        except Exception as e:
+            logger.error("Skill proposal failed: %s", e)
+
     def start(self):
         def _loop():
             time.sleep(60)
@@ -594,7 +688,7 @@ class Scheduler:
                 time.sleep(300)
         t = threading.Thread(target=_loop, daemon=True, name="scheduler")
         t.start()
-        logger.info("Scheduler started (7 tasks configured)")
+        logger.info("Scheduler started (%d tasks configured)", len(self._tasks))
 
 
 def _track_access_async(results: list, query: str):
@@ -626,8 +720,12 @@ def _kg_extract_async(content: str, importance: float):
             from second_brain.relation_extractor import extractor
             result = extractor.extract(content, importance=importance)
             if not result.skipped:
-                logger.info("KG extraction: %d nodes, %d edges",
-                            len(result.new_nodes), len(result.new_edges))
+                logger.info("KG extraction: %d nodes, %d edges, gain=%.2f",
+                            len(result.new_nodes), len(result.new_edges),
+                            result.structural_gain)
+                from second_brain.skill_proposer import save_kg_score
+                save_kg_score(result.structural_gain, content[:200])
+
                 from second_brain.inference import inference_engine
                 for node in result.new_nodes:
                     alerts = inference_engine.propagate(node.id)
@@ -910,6 +1008,31 @@ def _execute_endpoint(path: str, body: dict) -> dict:
         skill = registry.deprecate(body.get("skill_id", ""))
         return skill.to_dict() if skill else {"error": "Skill not found"}
 
+    elif path == "/skills/propose":
+        from second_brain.skill_proposer import proposer
+        days = body.get("days", 7)
+        proposals = proposer.scan_and_propose(days=days)
+        if proposals:
+            return {
+                "proposals": [
+                    {"title": p.title, "sources": p.sources, "tags": p.tags}
+                    for p in proposals
+                ],
+                "count": len(proposals),
+            }
+        kg_score = proposer._get_best_kg_score(days)
+        digest_score = proposer._get_best_digest_score(days)
+        collision_score = proposer._get_best_collision_score(days)
+        return {
+            "proposals": [],
+            "scores": {
+                "kg": kg_score,
+                "digest": digest_score,
+                "collision": collision_score,
+            },
+            "message": "需要任意两个分数达标才能提名技能",
+        }
+
     elif path == "/training/export":
         from chronos.distiller import distiller
         merged = distiller.prepare_merged()
@@ -1001,6 +1124,16 @@ def _get_session_context() -> dict:
         result["personality_traits"] = ""
 
     result["dormant_reminders"] = []
+
+    try:
+        from skill_registry import registry
+        active = registry.list_active()
+        result["active_skills"] = [
+            {"name": s.name, "id": s.id, "tags": s.tags}
+            for s in active[:10]
+        ]
+    except Exception:
+        result["active_skills"] = []
 
     result["milestones"] = _compute_milestones()
 

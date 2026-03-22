@@ -499,6 +499,7 @@ class TestAutoIngestor:
         ingestor = memory_server.AutoIngestor()
         ingestor._state_path = tmp_path / "memory" / "ingestion_state.json"
         ingestor._hashes_path = tmp_path / "memory" / "ingestion_hashes.json"
+        ingestor._msa_state_path = tmp_path / "memory" / "msa_ingestion_state.json"
 
         mock_collector_inst = MagicMock()
         mock_collector_inst.collect.return_value = {"timestamp": "2026-03-21T10:00:00"}
@@ -523,6 +524,134 @@ class TestAutoIngestor:
         assert mock_collector_inst.collect.called
         assert ingestor._state.get("2026-03-21.md") is not None
         memory_server._WORKSPACE = old_ws
+
+    def test_sync_daily_to_msa(self, tmp_path):
+        import memory_server
+        old_ws = memory_server._WORKSPACE
+        memory_server._WORKSPACE = tmp_path
+
+        mem_dir = tmp_path / "memory"
+        mem_dir.mkdir()
+        md_file = mem_dir / "2026-03-20.md"
+        long_content = "### 10:00:00 [Hub/memora]\n" + "这是一段很长的日志内容，包含用户的思考和记录。" * 20
+        md_file.write_text(long_content)
+
+        ingestor = memory_server.AutoIngestor()
+        ingestor._state_path = tmp_path / "memory" / "ingestion_state.json"
+        ingestor._hashes_path = tmp_path / "memory" / "ingestion_hashes.json"
+        ingestor._msa_state_path = tmp_path / "memory" / "msa_ingestion_state.json"
+
+        mock_bridge = MagicMock()
+        mock_bridge.ingest_and_save.return_value = {"doc_id": "daily-2026-03-20", "chunks": 3, "source": "daily_log"}
+
+        import msa.bridge as mbmod
+        orig_bridge = mbmod.bridge
+        mbmod.bridge = mock_bridge
+        try:
+            count = ingestor._sync_daily_to_msa([md_file])
+        finally:
+            mbmod.bridge = orig_bridge
+            memory_server._WORKSPACE = old_ws
+
+        assert count == 1
+        mock_bridge.ingest_and_save.assert_called_once()
+        call_kwargs = mock_bridge.ingest_and_save.call_args
+        assert call_kwargs[1]["write_daily"] is False
+        assert call_kwargs[1]["cross_index"] is False
+        assert call_kwargs[1]["doc_id"] == "daily-2026-03-20"
+        assert ingestor._msa_state.get("2026-03-20.md", 0) > 0
+
+    def test_sync_daily_to_msa_skip_small(self, tmp_path):
+        import memory_server
+        old_ws = memory_server._WORKSPACE
+        memory_server._WORKSPACE = tmp_path
+
+        mem_dir = tmp_path / "memory"
+        mem_dir.mkdir()
+        md_file = mem_dir / "2026-03-19.md"
+        md_file.write_text("short")
+
+        ingestor = memory_server.AutoIngestor()
+        ingestor._msa_state_path = tmp_path / "memory" / "msa_ingestion_state.json"
+
+        count = ingestor._sync_daily_to_msa([md_file])
+        assert count == 0
+        memory_server._WORKSPACE = old_ws
+
+    def test_sync_daily_to_msa_skip_unchanged(self, tmp_path):
+        import memory_server
+        old_ws = memory_server._WORKSPACE
+        memory_server._WORKSPACE = tmp_path
+
+        mem_dir = tmp_path / "memory"
+        mem_dir.mkdir()
+        md_file = mem_dir / "2026-03-18.md"
+        content = "A" * 300
+        md_file.write_text(content)
+
+        ingestor = memory_server.AutoIngestor()
+        ingestor._msa_state_path = tmp_path / "memory" / "msa_ingestion_state.json"
+        ingestor._msa_state = {"2026-03-18.md": 300}
+
+        mock_bridge = MagicMock()
+        import msa.bridge as mbmod
+        orig_bridge = mbmod.bridge
+        mbmod.bridge = mock_bridge
+        try:
+            count = ingestor._sync_daily_to_msa([md_file])
+        finally:
+            mbmod.bridge = orig_bridge
+            memory_server._WORKSPACE = old_ws
+
+        assert count == 0
+        mock_bridge.ingest_and_save.assert_not_called()
+
+    def test_kg_extract_from_msa_doc(self, tmp_path):
+        import memory_server
+        chunk_a = "这是第一段MSA文档chunk内容，包含足够多的文字来通过五十个字符的长度过滤阈值，用于测试KG提取功能是否正常工作"
+        chunk_b = "这是第二段MSA文档chunk内容，同样包含足够多的文字来通过五十个字符的长度过滤阈值，验证多chunk场景下的KG提取逻辑"
+        assert len(chunk_a) >= 50 and len(chunk_b) >= 50
+
+        mock_system = MagicMock()
+        mock_system.memory_bank.load_document_content.return_value = (
+            [chunk_a, chunk_b], {}
+        )
+        mock_kg = MagicMock()
+        import importlib
+        msa_sys_mod = importlib.import_module("msa.system")
+        orig_sys = msa_sys_mod.msa_system
+        orig_kg = memory_server._kg_extract_async
+        msa_sys_mod.msa_system = mock_system
+        memory_server._kg_extract_async = mock_kg
+        try:
+            ingestor = memory_server.AutoIngestor()
+            ingestor._kg_extract_from_msa_doc("daily-2026-03-20")
+            assert mock_kg.call_count == 2
+            mock_kg.assert_any_call(chunk_a, 0.65)
+            mock_kg.assert_any_call(chunk_b, 0.65)
+        finally:
+            msa_sys_mod.msa_system = orig_sys
+            memory_server._kg_extract_async = orig_kg
+
+    def test_kg_extract_from_msa_doc_skips_short(self, tmp_path):
+        import memory_server
+        mock_system = MagicMock()
+        mock_system.memory_bank.load_document_content.return_value = (["short"], {})
+
+        mock_kg = MagicMock()
+        import importlib
+        msa_sys_mod = importlib.import_module("msa.system")
+        orig_sys = msa_sys_mod.msa_system
+        orig_kg = memory_server._kg_extract_async
+        msa_sys_mod.msa_system = mock_system
+        memory_server._kg_extract_async = mock_kg
+        try:
+            ingestor = memory_server.AutoIngestor()
+            ingestor._kg_extract_from_msa_doc("test-doc")
+            mock_kg.assert_not_called()
+        finally:
+            msa_sys_mod.msa_system = orig_sys
+            memory_server._kg_extract_async = orig_kg
 
 
 class TestScheduler:

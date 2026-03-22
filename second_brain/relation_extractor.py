@@ -61,6 +61,7 @@ class ExtractionResult:
     new_edges: List[KGEdge] = field(default_factory=list)
     skipped: bool = False
     reason: str = ""
+    structural_gain: float = 0.0
 
     @classmethod
     def empty(cls, reason: str = "") -> "ExtractionResult":
@@ -102,9 +103,73 @@ class RelationExtractor:
             edge.target_id = self._resolve_node_id(edge.target_id, node_id_map)
             self._kg.add_edge(edge)
 
-        logger.info("Extraction complete: %d nodes, %d edges from content (%.0f chars)",
-                     len(result.new_nodes), len(result.new_edges), len(content))
+        result.structural_gain = self._calc_structural_gain(
+            result.new_nodes, result.new_edges, node_id_map)
+
+        logger.info("Extraction complete: %d nodes, %d edges, gain=%.2f from content (%.0f chars)",
+                     len(result.new_nodes), len(result.new_edges),
+                     result.structural_gain, len(content))
         return result
+
+    def _calc_structural_gain(self, new_nodes: List[KGNode],
+                              new_edges: List[KGEdge],
+                              node_id_map: dict) -> float:
+        """Pure graph-structural score: how much value did this extraction add?
+
+        Components:
+          - integration: fraction of new edges connecting to pre-existing nodes
+          - contradiction: bonus if any contradicts edge was found
+          - question_addressed: bonus if any edge addresses a question node
+          - bridge: bonus if extraction connects previously disconnected communities
+        """
+        if not new_nodes and not new_edges:
+            return 0.0
+
+        new_ids = set(node_id_map.values())
+        all_node_ids = set(self._kg._nodes.keys())
+        existing_ids = all_node_ids - new_ids
+
+        edges_to_existing = 0
+        has_contradiction = False
+        addresses_question = False
+
+        for edge in new_edges:
+            src, tgt = edge.source_id, edge.target_id
+            if src in existing_ids or tgt in existing_ids:
+                edges_to_existing += 1
+            if edge.edge_type == KGEdgeType.CONTRADICTS:
+                has_contradiction = True
+            if edge.edge_type == KGEdgeType.ADDRESSES:
+                other_id = tgt if src in new_ids else src
+                node = self._kg.get_node(other_id)
+                if node and node.node_type == KGNodeType.QUESTION:
+                    addresses_question = True
+
+        integration = (edges_to_existing / max(len(new_edges), 1)) if new_edges else 0.0
+
+        bridges_communities = False
+        try:
+            import networkx as nx
+            undirected = self._kg._graph.to_undirected()
+            connected_existing = set()
+            for nid in new_ids:
+                for neighbor in undirected.neighbors(nid):
+                    if neighbor in existing_ids:
+                        for comp in nx.connected_components(undirected):
+                            if neighbor in comp:
+                                connected_existing.add(frozenset(comp))
+                                break
+            bridges_communities = len(connected_existing) >= 2
+        except Exception:
+            pass
+
+        gain = (
+            0.3 * integration
+            + 0.3 * (1.0 if has_contradiction else 0.0)
+            + 0.2 * (1.0 if addresses_question else 0.0)
+            + 0.2 * (1.0 if bridges_communities else 0.0)
+        )
+        return round(gain, 4)
 
     def _find_candidate_nodes(self, content: str,
                               top_k: int = None) -> List[KGNode]:

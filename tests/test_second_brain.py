@@ -516,7 +516,7 @@ class TestSecondBrainBridgeV2:
                     "metadata": {"title": "Test"}, "ingested_at": "2025-01-01"}
         (msa_dir / "routing_index.jsonl").write_text(json.dumps(routing) + "\n")
         (content_dir / "doc_test_doc.jsonl").write_text(
-            json.dumps({"text": "First chunk of the document"}) + "\n"
+            json.dumps({"text": "First chunk of the document with enough content for collision"}) + "\n"
         )
 
         old_ws = bmod._WORKSPACE

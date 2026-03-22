@@ -160,45 +160,262 @@ class TestMemoryHub:
         hub._msa_bridge.query_memory.return_value = {
             "results": [{"chunks": ["c1"], "score": 0.7, "doc_id": "d1", "title": "T"}]
         }
-        result = hub.recall("query")
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=[]):
+            result = hub.recall("query")
         assert len(result["merged"]) == 2
         assert result["merged"][0]["score"] >= result["merged"][1]["score"]
+        assert "skills" in result
+        assert "kg_relations" in result
+        assert "evidence" in result
 
     def test_recall_memora_exception(self, tmp_path):
         hub = self._make_hub(tmp_path)
         hub._memora_bridge.search_across.side_effect = Exception("fail")
         hub._msa_bridge.query_memory.return_value = {"results": []}
-        result = hub.recall("query")
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=[]):
+            result = hub.recall("query")
         assert result["memora"] == []
 
     def test_recall_msa_exception(self, tmp_path):
         hub = self._make_hub(tmp_path)
         hub._memora_bridge.search_across.return_value = []
         hub._msa_bridge.query_memory.side_effect = Exception("fail")
-        result = hub.recall("query")
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=[]):
+            result = hub.recall("query")
         assert result["msa"] == []
+
+    def test_recall_with_skills(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        hub._memora_bridge.search_across.return_value = []
+        hub._msa_bridge.query_memory.return_value = {"results": []}
+        mock_skill = MagicMock()
+        mock_skill.name = "AI记忆系统设计"
+        mock_skill.content = "关于向量存储和嵌入模型的技能"
+        mock_skill.tags = ["memory", "ai"]
+        mock_skill.to_dict.return_value = {
+            "id": "s1", "name": "AI记忆系统设计",
+            "content": "关于向量存储和嵌入模型的技能",
+            "status": "active", "tags": ["memory", "ai"],
+        }
+        mock_registry = MagicMock()
+        mock_registry.list_active.return_value = [mock_skill]
+        with patch.dict(sys.modules, {"skill_registry": MagicMock(registry=mock_registry)}), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=[]):
+            result = hub.recall("记忆系统")
+        assert len(result["skills"]) == 1
+        assert result["skills"][0]["name"] == "AI记忆系统设计"
+        assert result["merged"][0]["system"] == "skill"
+
+    def test_recall_with_kg_relations(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        hub._memora_bridge.search_across.return_value = []
+        hub._msa_bridge.query_memory.return_value = {"results": []}
+        mock_relations = [{
+            "description": "[concept] RAG -[supports]→ [concept] Memory System",
+            "edge_type": "supports",
+            "source_content": "RAG",
+            "target_content": "Memory System",
+            "weight": 0.8,
+            "is_critical": False,
+            "metadata": {"source_id": "n1", "target_id": "n2"},
+        }]
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=mock_relations):
+            result = hub.recall("RAG系统")
+        assert len(result["kg_relations"]) == 1
+        assert result["merged"][0]["system"] == "kg"
+
+    def test_recall_assembled_ordering(self, tmp_path):
+        """Skills > KG > evidence in merged output."""
+        hub = self._make_hub(tmp_path)
+        hub._memora_bridge.search_across.return_value = [
+            {"content": "raw snippet", "score": 0.6}
+        ]
+        hub._msa_bridge.query_memory.return_value = {"results": []}
+        mock_skill = MagicMock()
+        mock_skill.name = "Skill A"
+        mock_skill.content = "skill content matching query"
+        mock_skill.tags = ["test"]
+        mock_skill.to_dict.return_value = {
+            "id": "s1", "name": "Skill A",
+            "content": "skill content matching query",
+            "status": "active", "tags": ["test"],
+        }
+        mock_registry = MagicMock()
+        mock_registry.list_active.return_value = [mock_skill]
+        mock_kg = [{
+            "description": "A -[supports]→ B",
+            "edge_type": "supports",
+            "source_content": "A", "target_content": "B",
+            "weight": 0.7, "is_critical": False, "metadata": {},
+        }]
+        with patch.dict(sys.modules, {"skill_registry": MagicMock(registry=mock_registry)}), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=mock_kg):
+            result = hub.recall("query")
+        merged = result["merged"]
+        assert merged[0]["system"] == "skill"
+        assert merged[1]["system"] == "kg"
+        assert merged[2]["system"] == "memora"
+
+    def test_recall_skills_exception(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        hub._memora_bridge.search_across.return_value = []
+        hub._msa_bridge.query_memory.return_value = {"results": []}
+        with patch.dict(sys.modules, {"skill_registry": MagicMock(
+                registry=MagicMock(list_active=MagicMock(side_effect=Exception("fail"))))}), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=[]):
+            result = hub.recall("query")
+        assert result["skills"] == []
+
+    def test_recall_kg_exception(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        hub._memora_bridge.search_across.return_value = []
+        hub._msa_bridge.query_memory.return_value = {"results": []}
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]), \
+             patch.dict(sys.modules, {"second_brain.knowledge_graph": MagicMock(
+                 kg=MagicMock(find_node_by_content=MagicMock(side_effect=Exception("fail"))))}):
+            result = hub.recall("query")
+        assert result["kg_relations"] == []
+
+    def test_recall_skills_tag_match(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        mock_skill = MagicMock()
+        mock_skill.name = "Unrelated Skill"
+        mock_skill.content = "nothing relevant here"
+        mock_skill.tags = ["memory"]
+        mock_skill.to_dict.return_value = {
+            "id": "s1", "name": "Unrelated Skill",
+            "content": "nothing relevant here",
+            "status": "active", "tags": ["memory"],
+        }
+        mock_registry = MagicMock()
+        mock_registry.list_active.return_value = [mock_skill]
+        with patch.dict(sys.modules, {"skill_registry": MagicMock(registry=mock_registry)}):
+            result = hub._recall_skills("memory")
+        assert len(result) == 1
+
+    def test_recall_skills_no_match(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        mock_skill = MagicMock()
+        mock_skill.name = "Cooking Guide"
+        mock_skill.content = "how to make pasta"
+        mock_skill.tags = ["cooking"]
+        mock_skill.to_dict.return_value = {
+            "id": "s1", "name": "Cooking Guide",
+            "content": "how to make pasta",
+            "status": "active", "tags": ["cooking"],
+        }
+        mock_registry = MagicMock()
+        mock_registry.list_active.return_value = [mock_skill]
+        with patch.dict(sys.modules, {"skill_registry": MagicMock(registry=mock_registry)}):
+            result = hub._recall_skills("量子计算")
+        assert len(result) == 0
+
+    def test_recall_skills_empty_registry(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        mock_registry = MagicMock()
+        mock_registry.list_active.return_value = []
+        with patch.dict(sys.modules, {"skill_registry": MagicMock(registry=mock_registry)}):
+            result = hub._recall_skills("query")
+        assert result == []
+
+    def test_recall_kg_with_nodes(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        mock_node = MagicMock()
+        mock_node.id = "n1"
+        mock_node.content = "RAG vector retrieval"
+        mock_node.node_type = MagicMock(value="concept")
+        mock_tgt_node = MagicMock()
+        mock_tgt_node.id = "n2"
+        mock_tgt_node.content = "Embedding model"
+        mock_tgt_node.node_type = MagicMock(value="concept")
+        mock_kg = MagicMock()
+        mock_kg.find_node_by_content.return_value = [mock_node]
+        mock_kg.get_edges.return_value = [("n1", "n2", {"edge_type": "supports", "weight": 0.8})]
+        mock_kg.get_node.side_effect = lambda nid: {"n1": mock_node, "n2": mock_tgt_node}.get(nid)
+        mock_edge_type = MagicMock()
+        mock_edge_type.CONTRADICTS = MagicMock(value="contradicts")
+        mock_edge_type.ADDRESSES = MagicMock(value="addresses")
+        with patch.dict(sys.modules, {
+            "second_brain.knowledge_graph": MagicMock(kg=mock_kg, KGEdgeType=mock_edge_type),
+            "shared_embedder": MagicMock(get=MagicMock(return_value=None)),
+        }):
+            result = hub._recall_kg("RAG")
+        assert len(result) == 1
+        assert "supports" in result[0]["edge_type"]
+
+    def test_recall_kg_embedding_path(self, tmp_path):
+        """When shared embedder is available, use vector similarity."""
+        hub = self._make_hub(tmp_path)
+        mock_node = MagicMock()
+        mock_node.id = "n1"
+        mock_node.content = "AI memory system"
+        mock_node.node_type = MagicMock(value="concept")
+        mock_kg = MagicMock()
+        mock_kg.get_all_nodes.return_value = [mock_node]
+        mock_kg.get_edges.return_value = []
+        mock_emb = MagicMock()
+        mock_emb.embed_query.return_value = [0.5, 0.5]
+        mock_emb.embed_document.return_value = [0.5, 0.5]
+        mock_edge_type = MagicMock()
+        mock_edge_type.CONTRADICTS = MagicMock(value="contradicts")
+        mock_edge_type.ADDRESSES = MagicMock(value="addresses")
+        with patch.dict(sys.modules, {
+            "second_brain.knowledge_graph": MagicMock(kg=mock_kg, KGEdgeType=mock_edge_type),
+            "shared_embedder": MagicMock(get=MagicMock(return_value=mock_emb)),
+        }):
+            result = hub._recall_kg("AI memory")
+        assert isinstance(result, list)
+
+    def test_recall_kg_no_nodes(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        mock_kg = MagicMock()
+        mock_kg.find_node_by_content.return_value = []
+        mock_edge_type = MagicMock()
+        with patch.dict(sys.modules, {
+            "second_brain.knowledge_graph": MagicMock(kg=mock_kg, KGEdgeType=mock_edge_type),
+            "shared_embedder": MagicMock(get=MagicMock(return_value=None)),
+        }):
+            result = hub._recall_kg("nothing")
+        assert result == []
 
     def test_deep_recall(self, tmp_path):
         hub = self._make_hub(tmp_path)
         hub._msa_bridge.interleave_query.return_value = {"answer": "yes"}
         hub._memora_bridge.search_across.return_value = [{"content": "x", "score": 0.5}]
-        result = hub.deep_recall("complex question")
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]):
+            result = hub.deep_recall("complex question")
         assert result["interleave"] == {"answer": "yes"}
         assert len(result["memora_context"]) == 1
+        assert "skills" in result
 
     def test_deep_recall_msa_exception(self, tmp_path):
         hub = self._make_hub(tmp_path)
         hub._msa_bridge.interleave_query.side_effect = Exception("fail")
         hub._memora_bridge.search_across.return_value = []
-        result = hub.deep_recall("q")
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]):
+            result = hub.deep_recall("q")
         assert result["interleave"] is None
 
     def test_deep_recall_memora_exception(self, tmp_path):
         hub = self._make_hub(tmp_path)
         hub._msa_bridge.interleave_query.return_value = {}
         hub._memora_bridge.search_across.side_effect = Exception("fail")
-        result = hub.deep_recall("q")
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]):
+            result = hub.deep_recall("q")
         assert result["memora_context"] == []
+
+    def test_deep_recall_with_skills(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        hub._msa_bridge.interleave_query.return_value = {}
+        hub._memora_bridge.search_across.return_value = []
+        mock_skills = [{"name": "Test Skill", "id": "s1", "content": "c"}]
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=mock_skills):
+            result = hub.deep_recall("q")
+        assert len(result["skills"]) == 1
 
     def test_status(self, tmp_path):
         hub = self._make_hub(tmp_path)

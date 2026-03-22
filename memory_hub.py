@@ -6,6 +6,12 @@ Refactored architecture:
   - MSA      (optional long-document storage + multi-hop reasoning)
   - Chronos  (training buffer — not on default ingest path)
   - Second Brain  (intelligence layer: KG, digest, collision — not a storage system)
+  - Skill Registry (distilled actionable knowledge — participates in recall)
+
+Recall pipeline (question-driven, assembled):
+  1. Skill layer:  match active skills by keyword → highest priority
+  2. KG layer:     find related nodes + logical relationships
+  3. Evidence layer: Memora snippets + MSA documents → raw supporting material
 
 Ingest tags (intent):
   - thought:    user's own thinking / analysis
@@ -153,8 +159,26 @@ class MemoryHub:
         return results
 
     def recall(self, query: str, top_k: int = 8) -> Dict:
-        """Merged search across Memora (snippet) + MSA (document-level)."""
-        results = {"query": query, "memora": [], "msa": [], "merged": []}
+        """Question-driven assembled recall.
+
+        Three-layer response:
+          1. skills:   matching active skills (highest priority)
+          2. kg:       related knowledge nodes + logical relationships
+          3. evidence: Memora snippets + MSA documents (raw material)
+        """
+        results = {
+            "query": query,
+            "skills": [],
+            "kg_relations": [],
+            "evidence": [],
+            "memora": [],
+            "msa": [],
+            "merged": [],
+        }
+
+        results["skills"] = self._recall_skills(query)
+
+        results["kg_relations"] = self._recall_kg(query)
 
         try:
             memora_results = self.memora.search_across(query, include_msa=False)
@@ -176,14 +200,39 @@ class MemoryHub:
         except Exception as e:
             logger.warning("MSA recall failed: %s", e)
 
-        merged = results["memora"] + results["msa"]
+        evidence = results["memora"] + results["msa"]
+        evidence.sort(key=lambda x: x.get("score", 0), reverse=True)
+        results["evidence"] = evidence[:top_k]
+
+        merged = []
+        for s in results["skills"]:
+            merged.append({
+                "content": f"[技能] {s['name']}: {s['content'][:300]}",
+                "score": 1.0,
+                "system": "skill",
+                "metadata": {"skill_id": s["id"], "status": s["status"]},
+            })
+        for kg in results["kg_relations"]:
+            merged.append({
+                "content": f"[知识关系] {kg['description']}",
+                "score": 0.9,
+                "system": "kg",
+                "metadata": kg.get("metadata", {}),
+            })
+        merged.extend(results["evidence"])
         merged.sort(key=lambda x: x.get("score", 0), reverse=True)
         results["merged"] = merged[:top_k]
+
+        logger.info("Recall: %d skills, %d kg_relations, %d evidence for '%s'",
+                     len(results["skills"]), len(results["kg_relations"]),
+                     len(results["evidence"]), query[:60])
         return results
 
     def deep_recall(self, query: str, max_rounds: int = 3) -> Dict:
-        """Multi-hop reasoning using MSA Memory Interleave + Memora context."""
+        """Multi-hop reasoning using MSA Memory Interleave + Memora context + Skills."""
         results = {"query": query}
+
+        results["skills"] = self._recall_skills(query)
 
         try:
             interleave = self.msa.interleave_query(query, max_rounds=max_rounds)
@@ -199,6 +248,121 @@ class MemoryHub:
             results["memora_context"] = []
 
         return results
+
+    def _recall_skills(self, query: str) -> List[Dict]:
+        """Search active skills by keyword match."""
+        try:
+            from skill_registry import registry
+            active = registry.list_active()
+            if not active:
+                return []
+
+            q_lower = query.lower()
+            scored = []
+            for skill in active:
+                name_lower = skill.name.lower()
+                content_lower = skill.content.lower()
+
+                if q_lower in name_lower or q_lower in content_lower:
+                    scored.append((1.0, skill))
+                    continue
+
+                words = q_lower.replace("，", " ").replace("、", " ").split()
+                hits = sum(1 for w in words
+                           if w in name_lower or w in content_lower)
+                if hits > 0:
+                    score = hits / max(len(words), 1)
+                    scored.append((score, skill))
+                    continue
+
+                tag_overlap = any(t.lower() in q_lower for t in skill.tags)
+                if tag_overlap:
+                    scored.append((0.5, skill))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [
+                {**s.to_dict(), "match_score": round(sc, 2)}
+                for sc, s in scored[:5]
+            ]
+        except Exception as e:
+            logger.warning("Skill recall failed: %s", e)
+            return []
+
+    def _recall_kg(self, query: str, max_nodes: int = 8) -> List[Dict]:
+        """Find KG nodes related to the query and their logical relationships."""
+        try:
+            from second_brain.knowledge_graph import kg, KGEdgeType
+
+            try:
+                import shared_embedder
+                emb = shared_embedder.get()
+                if emb is not None:
+                    import numpy as np
+                    embed_q = emb.embed_query if hasattr(emb, "embed_query") else emb.embed
+                    embed_d = emb.embed_document if hasattr(emb, "embed_document") else emb.embed
+                    q_vec = np.array(embed_q(query), dtype=np.float32)
+                    all_nodes = kg.get_all_nodes()
+                    scored = []
+                    for node in all_nodes:
+                        n_vec = np.array(embed_d(node.content), dtype=np.float32)
+                        sim = float(np.dot(q_vec, n_vec))
+                        if sim > 0.3:
+                            scored.append((sim, node))
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    top_nodes = [n for _, n in scored[:max_nodes]]
+                else:
+                    top_nodes = kg.find_node_by_content(query, max_results=max_nodes)
+            except Exception:
+                top_nodes = kg.find_node_by_content(query, max_results=max_nodes)
+
+            if not top_nodes:
+                return []
+
+            relations = []
+            seen_pairs = set()
+            for node in top_nodes:
+                edges = kg.get_edges(node.id, direction="both")
+                for src, tgt, data in edges[:5]:
+                    pair_key = (min(src, tgt), max(src, tgt))
+                    if pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
+
+                    src_node = kg.get_node(src)
+                    tgt_node = kg.get_node(tgt)
+                    if not src_node or not tgt_node:
+                        continue
+
+                    edge_type = data.get("edge_type", "?")
+                    desc = (f"[{src_node.node_type.value}] {src_node.content[:80]} "
+                            f"-[{edge_type}]→ "
+                            f"[{tgt_node.node_type.value}] {tgt_node.content[:80]}")
+
+                    is_critical = edge_type in (
+                        KGEdgeType.CONTRADICTS.value,
+                        KGEdgeType.ADDRESSES.value,
+                    )
+
+                    relations.append({
+                        "description": desc,
+                        "edge_type": edge_type,
+                        "source_content": src_node.content[:150],
+                        "target_content": tgt_node.content[:150],
+                        "weight": data.get("weight", 0.5),
+                        "is_critical": is_critical,
+                        "metadata": {
+                            "source_id": src, "target_id": tgt,
+                            "source_type": src_node.node_type.value,
+                            "target_type": tgt_node.node_type.value,
+                        },
+                    })
+
+            relations.sort(key=lambda r: (r["is_critical"], r["weight"]), reverse=True)
+            return relations[:10]
+
+        except Exception as e:
+            logger.warning("KG recall failed: %s", e)
+            return []
 
     def status(self) -> Dict:
         """Combined status from all systems."""

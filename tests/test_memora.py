@@ -391,6 +391,52 @@ class TestDigest:
             dmod.config = orig
         assert result is False
 
+    def test_digest_with_msa_context(self, tmp_path):
+        """Digest incorporates MSA cross-day context when available."""
+        cfg = self._make_cfg(tmp_path)
+        today = datetime.now().strftime("%Y-%m-%d")
+        (cfg.daily_dir / f"{today}.md").write_text("### entry\n日志内容\n")
+
+        import second_brain.digest as dmod
+        orig = dmod.config
+        dmod.config = cfg
+
+        try:
+            with patch("second_brain.digest._collect_msa_context",
+                       return_value="跨天分析：记忆系统从v0.0.1到v0.0.4经历了四次迭代"), \
+                 patch("llm_client.is_available", return_value=False):
+                result = dmod.digest_memories(days=7)
+        finally:
+            dmod.config = orig
+
+        assert result is True
+        digests = list(cfg.long_term_dir.glob("digest_*.md"))
+        assert len(digests) == 1
+        content = digests[0].read_text()
+        assert "MSA 跨天上下文" in content
+        assert "跨天分析" in content
+
+    def test_digest_msa_context_empty(self, tmp_path):
+        """Digest works fine when MSA has no documents."""
+        cfg = self._make_cfg(tmp_path)
+        today = datetime.now().strftime("%Y-%m-%d")
+        (cfg.daily_dir / f"{today}.md").write_text("### entry\ncontent\n")
+
+        import second_brain.digest as dmod
+        orig = dmod.config
+        dmod.config = cfg
+        try:
+            with patch("second_brain.digest._collect_msa_context", return_value=""):
+                with patch("llm_client.is_available", return_value=False):
+                    result = dmod.digest_memories(days=7)
+        finally:
+            dmod.config = orig
+
+        assert result is True
+        digests = list(cfg.long_term_dir.glob("digest_*.md"))
+        content = digests[0].read_text()
+        assert "MSA 跨天上下文" not in content
+
 
 # ═══════════════════════════════════════════════════════════
 # memora/bridge.py

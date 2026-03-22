@@ -463,7 +463,11 @@ class SecondBrainBridge:
         return results
 
     def _load_msa_summaries(self) -> List[dict]:
-        """Load MSA routing index as document-level summaries."""
+        """Load MSA chunks as individual entries for richer collision material.
+
+        Instead of only the first chunk per document, loads every chunk so each
+        can independently participate in collisions with other memory layers.
+        """
         routing_file = _WORKSPACE / "memory" / "msa" / "routing_index.jsonl"
         if not routing_file.exists():
             return []
@@ -477,24 +481,41 @@ class SecondBrainBridge:
                         continue
                     entry = json.loads(line)
                     doc_id = entry.get("doc_id", "")
+                    ingested_at = entry.get("ingested_at", "")
+                    metadata = entry.get("metadata", {})
                     content_file = _WORKSPACE / "memory" / "msa" / "content" / f"doc_{doc_id}.jsonl"
-                    preview = ""
-                    if content_file.exists():
-                        with open(content_file, "r", encoding="utf-8") as cf:
-                            first_line = cf.readline().strip()
-                            if first_line:
-                                chunk = json.loads(first_line)
-                                preview = chunk.get("text", "")[:500]
 
-                    results.append({
-                        "content": preview or f"[MSA document: {doc_id}]",
-                        "timestamp": entry.get("ingested_at", ""),
-                        "importance": 0.7,
-                        "metadata": entry.get("metadata", {}),
-                        "doc_id": doc_id,
-                        "chunk_count": entry.get("chunk_count", 0),
-                        "source_system": "msa",
-                    })
+                    if not content_file.exists():
+                        results.append({
+                            "content": f"[MSA document: {doc_id}]",
+                            "timestamp": ingested_at,
+                            "importance": 0.7,
+                            "metadata": metadata,
+                            "doc_id": doc_id,
+                            "source_system": "msa",
+                        })
+                        continue
+
+                    with open(content_file, "r", encoding="utf-8") as cf:
+                        for ci, cline in enumerate(cf):
+                            cline = cline.strip()
+                            if not cline:
+                                continue
+                            try:
+                                chunk = json.loads(cline)
+                                text = chunk.get("text", "")
+                                if len(text) < 30:
+                                    continue
+                                results.append({
+                                    "content": text[:800],
+                                    "timestamp": ingested_at,
+                                    "importance": 0.7,
+                                    "metadata": {**metadata, "chunk_index": ci},
+                                    "doc_id": doc_id,
+                                    "source_system": "msa",
+                                })
+                            except json.JSONDecodeError:
+                                continue
         except Exception as e:
             logger.warning("Failed to load MSA summaries: %s", e)
 

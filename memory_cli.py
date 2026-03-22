@@ -113,26 +113,58 @@ def cmd_remember(args):
 
 def cmd_recall(args):
     result = _post("/recall", {"query": args.query, "top_k": args.top_k})
-    merged = result.get("merged", [])
-    if not merged:
+
+    skills = result.get("skills", [])
+    kg_rels = result.get("kg_relations", [])
+    evidence = result.get("evidence", [])
+    total = len(skills) + len(kg_rels) + len(evidence)
+
+    if total == 0:
         print("  没有找到相关记忆。试试换个关键词？")
         return
-    print(f"  找到 {len(merged)} 条相关记忆:\n")
-    for i, r in enumerate(merged, 1):
-        score = r.get("score", 0)
-        content = r.get("content", "")[:200]
-        ts = r.get("metadata", {}).get("timestamp", r.get("timestamp", ""))
-        date = ts[:10] if ts else ""
-        bar = "█" * max(1, int(score * 10))
-        date_label = f" ({date})" if date else ""
-        print(f"  [{i}] {bar} {score:.0%}{date_label}")
-        print(f"      {content}")
+
+    if skills:
+        print(f"\n  ▎技能 ({len(skills)} 条匹配)  ──────────")
+        for s in skills:
+            print(f"  ★ {s.get('name', '?')}")
+            tags = ", ".join(s.get("tags", []))
+            if tags:
+                print(f"    标签: {tags}")
+            print(f"    {s.get('content', '')[:250]}")
+            print()
+
+    if kg_rels:
+        print(f"  ▎知识关系 ({len(kg_rels)} 条)  ──────────")
+        for rel in kg_rels:
+            prefix = "⚠" if rel.get("is_critical") else "→"
+            print(f"  {prefix} {rel.get('description', '')[:200]}")
         print()
+
+    if evidence:
+        print(f"  ▎原始记忆 ({len(evidence)} 条)  ──────────")
+        for i, r in enumerate(evidence, 1):
+            score = r.get("score", 0)
+            content = r.get("content", "")[:200]
+            ts = r.get("metadata", {}).get("timestamp", r.get("timestamp", ""))
+            date = ts[:10] if ts else ""
+            bar = "█" * max(1, int(score * 10))
+            date_label = f" ({date})" if date else ""
+            print(f"  [{i}] {bar} {score:.0%}{date_label}")
+            print(f"      {content}")
+            print()
 
 
 def cmd_deep_recall(args):
     result = _post_async("/deep-recall", {"query": args.query, "max_rounds": args.max_rounds},
                          label="深度搜索")
+
+    skills = result.get("skills", [])
+    if skills:
+        print(f"\n  ▎相关技能 ({len(skills)} 条)  ──────────")
+        for s in skills:
+            print(f"  ★ {s.get('name', '?')}: {s.get('content', '')[:150]}")
+        print()
+
     interleave = result.get("interleave")
     if interleave:
         answer = interleave.get("final_answer", "")
@@ -263,6 +295,22 @@ def cmd_training_export(args):
     result = _post("/training/export", {})
     path = result.get("dataset_path", "")
     print(f"  ✓ 训练数据已导出: {path}")
+
+
+def cmd_skill_propose(args):
+    result = _post("/skills/propose", {"days": args.days})
+    proposals = result.get("proposals", [])
+    if not proposals:
+        scores = result.get("scores", {})
+        print("  暂无技能提名（需要任意两个分数达标）:")
+        print(f"    KG structural_gain:      {scores.get('kg', 0):.2f} (阈值 0.6)")
+        print(f"    Digest compression_value: {scores.get('digest', 0):.2f} (阈值 0.7)")
+        print(f"    Collision novelty:        {scores.get('collision', 0)} (阈值 4)")
+        return
+    for p in proposals:
+        print(f"  ✓ 已提名 draft 技能: {p.get('title', '?')}")
+        for k, v in p.get("sources", {}).items():
+            print(f"    {k} = {v}")
 
 
 # ── Second Brain commands ─────────────────────────────────
@@ -668,6 +716,10 @@ def main():
 
     p = sub.add_parser("training-export", help="导出训练数据 (JSONL)")
     p.set_defaults(func=cmd_training_export)
+
+    p = sub.add_parser("skill-propose", help="扫描 Second Brain 产出，自动提名技能")
+    p.add_argument("--days", type=int, default=7, help="扫描最近 N 天")
+    p.set_defaults(func=cmd_skill_propose)
 
     # ── Second Brain ────
     p = sub.add_parser("collide", help="灵感碰撞 (从记忆中发现联系)")
