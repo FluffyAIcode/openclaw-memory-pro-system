@@ -250,27 +250,19 @@ memory-cli briefing                # Daily memory briefing
 ## Project Structure
 
 ```
-├── memora/                  # RAG memory system
+├── memora/                  # 统一语料库 — RAG 向量存储
 │   ├── collector.py         # Raw memory ingestion
-│   ├── vectorstore.py       # JSONL-based vector store
-│   ├── embedder.py          # Embedding with shared model fallback
-│   ├── digest.py            # LLM-powered daily summarization
-│   ├── distiller.py         # LoRA dataset preparation (training placeholder)
+│   ├── vectorstore.py       # JSONL-based vector store (nomic-embed-text)
+│   ├── embedder.py          # Embedding with search_document/search_query prefixes
 │   └── bridge.py            # Cross-system integration
-├── chronos/                 # Continual learning system
-│   ├── encoder.py           # Importance-weighted memory encoding
-│   ├── replay_buffer.py     # Experience replay storage
-│   ├── ewc.py               # Elastic Weight Consolidation
-│   ├── dynamic_lora.py      # Virtual LoRA adapter management
-│   ├── consolidator.py      # Periodic consolidation + personality generation
-│   └── bridge.py            # OpenClaw integration
-├── msa/                     # Memory Sparse Attention
+├── msa/                     # 统一语料库 — 长文档存储 (Memory Sparse Attention)
 │   ├── encoder.py           # Document chunking + routing key generation
 │   ├── memory_bank.py       # Tiered storage (RAM keys, disk content)
 │   ├── router.py            # Batch cosine similarity top-k selection
 │   ├── interleave.py        # Multi-hop retrieval-generation loops
 │   └── bridge.py            # Integration with cross-indexing to Memora
-├── second_brain/            # Cognitive engine: tracking + collision + KG reasoning
+├── second_brain/            # 智能层 — KG 织网 / 蒸馏总结 / 碰撞联想
+│   ├── digest.py            # LLM-powered daily summarization (moved from memora/)
 │   ├── tracker.py           # Vitality scoring, dormancy detection, trends
 │   ├── collision.py         # 7-strategy inspiration engine (5 RAG + 2 KG-driven)
 │   ├── strategy_weights.py  # Adaptive collision strategy selection via ratings
@@ -279,17 +271,27 @@ memory-cli briefing                # Daily memory briefing
 │   ├── inference.py         # Contradiction detection, absence reasoning, propagation
 │   ├── internalization.py   # Maturity tracking → Chronos PERSONALITY.yaml
 │   └── bridge.py            # Unified interface
+├── skill_registry/          # 技能层 — 从记忆到可操作技能
+│   └── registry.py          # JSONL-backed skill store (draft → active → deprecated)
+├── chronos/                 # 训练层 — Nebius 微调管线
+│   ├── encoder.py           # Importance-weighted memory encoding
+│   ├── replay_buffer.py     # Training candidate buffer
+│   ├── distiller.py         # JSONL training dataset generation (moved from memora/)
+│   ├── nebius_client.py     # Cloud fine-tuning client skeleton
+│   ├── consolidator.py      # Personality profile generation (PERSONALITY.yaml)
+│   └── bridge.py            # OpenClaw integration
 ├── memory_server.py         # HTTP daemon with async task queue
-├── memory_hub.py            # Unified ingestion/query router
+├── memory_hub.py            # Unified ingestion/query router (with tag support)
 ├── memory_cli.py            # Thin HTTP client with async polling
 ├── llm_client.py            # xAI Grok API wrapper
 ├── shared_embedder.py       # Singleton embedding model
 ├── setup.py                 # Package configuration
-├── tests/                   # 463 unit tests across 16 files
+├── tests/                   # 474 unit tests across 17 files
 │   ├── test_memora.py
-│   ├── test_chronos.py
+│   ├── test_chronos.py       # distiller, nebius_client tests included
 │   ├── test_msa.py
 │   ├── test_second_brain.py
+│   ├── test_skill_registry.py # NEW
 │   ├── test_knowledge_graph.py
 │   ├── test_inference.py
 │   ├── test_relation_extractor.py
@@ -315,10 +317,10 @@ memory-cli briefing                # Daily memory briefing
 python3 -m pytest tests/ -q
 
 # With coverage
-python3 -m pytest tests/ --cov=memora --cov=chronos --cov=msa --cov=second_brain --cov=memory_server --cov=memory_hub -q
+python3 -m pytest tests/ --cov=memora --cov=chronos --cov=msa --cov=second_brain --cov=skill_registry --cov=memory_server --cov=memory_hub -q
 ```
 
-463 tests covering all four subsystems (including Second Brain's KG and inference engine), the server, the hub, and the CLI layer.
+474 tests across 17 files, covering all subsystems (Memora, MSA, Second Brain KG/inference, Chronos training pipeline, Skill Registry), the server, the hub, and the CLI layer.
 
 ## Embedding Model
 
@@ -335,8 +337,9 @@ export TRANSFORMERS_OFFLINE=1
 
 See [STUBS.md](STUBS.md) for a full catalog of stubbed/simulated components. Key items:
 
-- **Chronos EWC/LoRA**: Simulated without a real neural network — importance tracking and adapter management work, but no actual gradient-based learning occurs
-- **Memora Distiller**: Dataset preparation is real, but LoRA fine-tuning is a placeholder (`TODO: integrate Axolotl/Unsloth`)
+- **Chronos Nebius Client**: Skeleton only — `upload_dataset`, `create_job`, `poll_job` raise `NotImplementedError`. See [NEBIUS_FINETUNE_INTEGRATION_SKETCH.md](docs/NEBIUS_FINETUNE_INTEGRATION_SKETCH.md) for the integration plan.
+- **Chronos EWC/LoRA**: `ewc.py` and `dynamic_lora.py` still exist on disk but are **no longer imported** by any production code (deprecated since v0.0.3-beta).
+- **Skill Registry**: Functional but no auto-promotion pipeline yet — skills must be manually added via `/skills/add`.
 - **Daemon + MPS**: The daemon process forces CPU mode because macOS Metal services are unavailable after `setsid()`. Foreground mode uses MPS (Apple GPU) normally
 
 ## License
