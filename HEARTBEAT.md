@@ -44,8 +44,10 @@ memory-cli digest --days 7
 
 检查距离上次巩固是否已超过 6 小时。如果是，执行：
 
+Memory Server 的内置 Scheduler 会自动执行巩固并生成 `PERSONALITY.yaml`。如需手动触发：
+
 ```bash
-python3 -m chronos consolidate
+memory-cli status   # 检查 chronos buffer_size 和 learn_count
 ```
 
 然后更新 `lastChecks.chronos_consolidate` 时间戳。巩固完成后检查 `PERSONALITY.yaml` 是否已更新。
