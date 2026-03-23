@@ -250,43 +250,79 @@ class MemoryHub:
         return results
 
     def _recall_skills(self, query: str) -> List[Dict]:
-        """Search active skills by keyword match."""
+        """Search active skills using vector similarity with keyword fallback."""
         try:
             from skill_registry import registry
             active = registry.list_active()
             if not active:
                 return []
 
-            q_lower = query.lower()
-            scored = []
-            for skill in active:
-                name_lower = skill.name.lower()
-                content_lower = skill.content.lower()
-
-                if q_lower in name_lower or q_lower in content_lower:
-                    scored.append((1.0, skill))
-                    continue
-
-                words = q_lower.replace("，", " ").replace("、", " ").split()
-                hits = sum(1 for w in words
-                           if w in name_lower or w in content_lower)
-                if hits > 0:
-                    score = hits / max(len(words), 1)
-                    scored.append((score, skill))
-                    continue
-
-                tag_overlap = any(t.lower() in q_lower for t in skill.tags)
-                if tag_overlap:
-                    scored.append((0.5, skill))
+            scored = self._recall_skills_vector(query, active)
+            if not scored:
+                scored = self._recall_skills_keyword(query, active)
 
             scored.sort(key=lambda x: x[0], reverse=True)
             return [
                 {**s.to_dict(), "match_score": round(sc, 2)}
                 for sc, s in scored[:5]
+                if sc > 0.25
             ]
         except Exception as e:
             logger.warning("Skill recall failed: %s", e)
             return []
+
+    def _recall_skills_vector(self, query: str,
+                              skills: list) -> List[tuple]:
+        """Primary path: embed query + skill content, rank by cosine similarity."""
+        try:
+            import shared_embedder
+            emb = shared_embedder.get()
+            if emb is None:
+                return []
+
+            import numpy as np
+            embed_q = emb.embed_query if hasattr(emb, "embed_query") else emb.embed
+            embed_d = emb.embed_document if hasattr(emb, "embed_document") else emb.embed
+
+            q_vec = np.array(embed_q(query), dtype=np.float32)
+            scored = []
+            for skill in skills:
+                text = f"{skill.name} {skill.content[:500]}"
+                s_vec = np.array(embed_d(text), dtype=np.float32)
+                sim = float(np.dot(q_vec, s_vec))
+                if sim > 0.25:
+                    scored.append((sim, skill))
+            return scored
+        except Exception as e:
+            logger.debug("Vector skill recall unavailable: %s", e)
+            return []
+
+    @staticmethod
+    def _recall_skills_keyword(query: str, skills: list) -> List[tuple]:
+        """Fallback: keyword + tag matching when embedder is unavailable."""
+        q_lower = query.lower()
+        scored = []
+        for skill in skills:
+            name_lower = skill.name.lower()
+            content_lower = skill.content.lower()
+
+            if q_lower in name_lower or q_lower in content_lower:
+                scored.append((1.0, skill))
+                continue
+
+            words = q_lower.replace("，", " ").replace("、", " ").split()
+            hits = sum(1 for w in words
+                       if w in name_lower or w in content_lower)
+            if hits > 0:
+                score = hits / max(len(words), 1)
+                scored.append((score, skill))
+                continue
+
+            tag_overlap = any(t.lower() in q_lower for t in skill.tags)
+            if tag_overlap:
+                scored.append((0.5, skill))
+
+        return scored
 
     def _recall_kg(self, query: str, max_nodes: int = 8) -> List[Dict]:
         """Find KG nodes related to the query and their logical relationships."""

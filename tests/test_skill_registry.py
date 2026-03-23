@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -142,6 +142,147 @@ class TestSkillRegistry:
         (d / "registry.jsonl").write_text("bad json\n")
         reg = SkillRegistry(registry_dir=d)
         assert len(reg.list_all()) == 0
+
+
+    def test_record_feedback_success(self, tmp_path):
+        from skill_registry.registry import SkillRegistry, SkillStatus
+        reg = SkillRegistry(registry_dir=tmp_path / "skills")
+        s = reg.add("skill1", "content1")
+        reg.promote(s.id)
+        result = reg.record_feedback(s.id, "test query", "success")
+        assert result.successes == 1
+        assert result.failures == 0
+        assert result.utility_rate == 1.0
+
+    def test_record_feedback_failure(self, tmp_path):
+        from skill_registry.registry import SkillRegistry
+        reg = SkillRegistry(registry_dir=tmp_path / "skills")
+        s = reg.add("skill1", "content1")
+        reg.promote(s.id)
+        reg.record_feedback(s.id, "q1", "failure")
+        reg.record_feedback(s.id, "q2", "failure")
+        skill = reg.get(s.id)
+        assert skill.failures == 2
+        assert skill.utility_rate == 0.0
+
+    def test_record_feedback_nonexistent(self, tmp_path):
+        from skill_registry.registry import SkillRegistry
+        reg = SkillRegistry(registry_dir=tmp_path / "skills")
+        assert reg.record_feedback("nonexistent", "q", "success") is None
+
+    def test_utility_rate_default(self):
+        from skill_registry.registry import Skill
+        s = Skill("test", "content")
+        assert s.utility_rate == 0.5
+        assert s.total_uses == 0
+
+    def test_utility_rate_calculated(self):
+        from skill_registry.registry import Skill
+        s = Skill("test", "content", successes=3, failures=1)
+        assert s.utility_rate == 0.75
+        assert s.total_uses == 4
+
+    def test_usage_log_written(self, tmp_path):
+        from skill_registry.registry import SkillRegistry
+        reg = SkillRegistry(registry_dir=tmp_path / "skills")
+        s = reg.add("skill1", "content1")
+        reg.record_feedback(s.id, "my query", "success", "worked well")
+        log_file = tmp_path / "skills" / "usage_log.jsonl"
+        assert log_file.exists()
+        import json
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["skill_id"] == s.id
+        assert entry["query"] == "my query"
+        assert entry["outcome"] == "success"
+
+    def test_get_usage_stats(self, tmp_path):
+        from skill_registry.registry import SkillRegistry
+        reg = SkillRegistry(registry_dir=tmp_path / "skills")
+        s1 = reg.add("skill1", "c1")
+        s2 = reg.add("skill2", "c2")
+        reg.record_feedback(s1.id, "q", "success")
+        reg.record_feedback(s1.id, "q", "failure")
+        stats = reg.get_usage_stats()
+        assert len(stats) == 1
+        assert stats[0]["id"] == s1.id
+        assert stats[0]["total_uses"] == 2
+
+    def test_trigger_rewrite_on_low_utility(self, tmp_path):
+        from skill_registry.registry import SkillRegistry, SkillStatus
+        reg = SkillRegistry(registry_dir=tmp_path / "skills")
+        s = reg.add("bad skill", "incorrect info")
+        reg.promote(s.id)
+        reg.record_feedback(s.id, "q1", "failure", "wrong answer")
+        reg.record_feedback(s.id, "q2", "failure", "not helpful")
+        with patch.object(reg, "_trigger_rewrite") as mock_rw:
+            reg.record_feedback(s.id, "q3", "failure", "still bad")
+            assert mock_rw.called
+
+    def test_structured_content(self):
+        from skill_registry.registry import Skill
+        s = Skill("AI Memory", "核心知识内容",
+                   prerequisites="需要向量数据库",
+                   procedures="1. 嵌入 2. 存储 3. 召回",
+                   applicable_scenarios="碎片化学习",
+                   inapplicable_scenarios="实时流式数据",
+                   tags=["ai", "memory"],
+                   successes=5, failures=1)
+        text = s.structured_content()
+        assert "# AI Memory" in text
+        assert "## 前提条件" in text
+        assert "## 核心知识" in text
+        assert "## 操作步骤" in text
+        assert "## 适用场景" in text
+        assert "## 不适用场景" in text
+        assert "83%" in text
+
+    def test_to_dict_includes_new_fields(self):
+        from skill_registry.registry import Skill
+        s = Skill("test", "content",
+                   successes=2, failures=1,
+                   prerequisites="prereq",
+                   procedures="proc",
+                   applicable_scenarios="good",
+                   inapplicable_scenarios="bad")
+        d = s.to_dict()
+        assert d["successes"] == 2
+        assert d["failures"] == 1
+        assert d["utility_rate"] == round(2/3, 3)
+        assert d["total_uses"] == 3
+        assert d["prerequisites"] == "prereq"
+        assert d["procedures"] == "proc"
+
+    def test_from_dict_with_new_fields(self):
+        from skill_registry.registry import Skill
+        d = {
+            "name": "test", "content": "c",
+            "successes": 5, "failures": 2,
+            "prerequisites": "p", "procedures": "pr",
+            "applicable_scenarios": "a", "inapplicable_scenarios": "i",
+        }
+        s = Skill.from_dict(d)
+        assert s.successes == 5
+        assert s.failures == 2
+        assert s.prerequisites == "p"
+
+    def test_stats_includes_usage(self, tmp_path):
+        from skill_registry.registry import SkillRegistry
+        reg = SkillRegistry(registry_dir=tmp_path / "skills")
+        s = reg.add("s1", "c1")
+        reg.record_feedback(s.id, "q", "success")
+        st = reg.stats()
+        assert st["total_uses"] == 1
+        assert st["avg_utility"] == 1.0
+
+    def test_add_with_structured_fields(self, tmp_path):
+        from skill_registry.registry import SkillRegistry
+        reg = SkillRegistry(registry_dir=tmp_path / "skills")
+        s = reg.add("structured", "content",
+                     prerequisites="need X",
+                     procedures="step 1, step 2",
+                     applicable_scenarios="scenario A")
+        assert s.prerequisites == "need X"
+        assert s.procedures == "step 1, step 2"
 
 
 # ═══════════════════════════════════════════════════════════

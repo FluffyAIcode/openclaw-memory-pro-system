@@ -1,3 +1,3 @@
-from .registry import registry, Skill, SkillStatus
+from .registry import registry, Skill, SkillStatus, LOW_UTILITY_THRESHOLD
 
-__all__ = ["registry", "Skill", "SkillStatus"]
+__all__ = ["registry", "Skill", "SkillStatus", "LOW_UTILITY_THRESHOLD"]

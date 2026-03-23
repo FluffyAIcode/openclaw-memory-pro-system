@@ -1033,6 +1033,24 @@ def _execute_endpoint(path: str, body: dict) -> dict:
             "message": "需要任意两个分数达标才能提名技能",
         }
 
+    elif path == "/skills/feedback":
+        from skill_registry import registry
+        skill = registry.record_feedback(
+            skill_id=body.get("skill_id", ""),
+            query=body.get("query", ""),
+            outcome=body.get("outcome", "failure"),
+            context=body.get("context", ""),
+        )
+        if skill:
+            return {
+                "skill_id": skill.id,
+                "name": skill.name,
+                "utility_rate": round(skill.utility_rate, 3),
+                "total_uses": skill.total_uses,
+                "version": skill.version,
+            }
+        return {"error": "Skill not found"}
+
     elif path == "/training/export":
         from chronos.distiller import distiller
         merged = distiller.prepare_merged()
@@ -1344,6 +1362,10 @@ class MemoryHandler(BaseHTTPRequestHandler):
         elif self.path == "/skills/stats":
             from skill_registry import registry
             self._respond(200, registry.stats())
+
+        elif self.path == "/skills/usage":
+            from skill_registry import registry
+            self._respond(200, {"usage": registry.get_usage_stats()})
 
         else:
             self._respond(404, {"error": f"Unknown endpoint: {self.path}"})

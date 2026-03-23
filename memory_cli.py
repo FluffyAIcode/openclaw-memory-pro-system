@@ -258,7 +258,10 @@ def cmd_skills(args):
     status_icon = {"draft": "📝", "active": "✅", "deprecated": "🚫"}
     for s in skills:
         icon = status_icon.get(s.get("status", ""), "?")
-        print(f"  {icon} {s['name']} (v{s.get('version', 1)}) [{s['id']}]")
+        uses = s.get("total_uses", 0)
+        utility = s.get("utility_rate", 0)
+        use_label = f" | utility {utility:.0%} ({uses} uses)" if uses > 0 else ""
+        print(f"  {icon} {s['name']} (v{s.get('version', 1)}) [{s['id']}]{use_label}")
         if s.get("tags"):
             print(f"     标签: {', '.join(s['tags'])}")
 
@@ -311,6 +314,34 @@ def cmd_skill_propose(args):
         print(f"  ✓ 已提名 draft 技能: {p.get('title', '?')}")
         for k, v in p.get("sources", {}).items():
             print(f"    {k} = {v}")
+
+
+def cmd_skill_feedback(args):
+    result = _post("/skills/feedback", {
+        "skill_id": args.skill_id,
+        "query": args.query,
+        "outcome": args.outcome,
+        "context": args.context or "",
+    })
+    if "error" in result:
+        print(f"  ✗ {result['error']}")
+    else:
+        print(f"  ✓ 反馈已记录: {result.get('name', '')} → {args.outcome}")
+        print(f"    utility: {result.get('utility_rate', 0):.0%} ({result.get('total_uses', 0)} uses, v{result.get('version', 0)})")
+
+
+def cmd_skill_usage(args):
+    result = _get("/skills/usage")
+    usage = result.get("usage", [])
+    if not usage:
+        print("  还没有技能使用记录。")
+        return
+    print(f"  共 {len(usage)} 个技能有使用记录:\n")
+    usage.sort(key=lambda x: x.get("total_uses", 0), reverse=True)
+    for u in usage:
+        bar = "█" * max(1, int(u.get("utility_rate", 0) * 10))
+        print(f"  {bar} {u['utility_rate']:.0%} | {u['name']} "
+              f"({u['successes']}✓ {u['failures']}✗ v{u['version']}) [{u['id']}]")
 
 
 # ── Second Brain commands ─────────────────────────────────
@@ -644,6 +675,7 @@ def main():
 技能管理:
   skills      查看所有技能        skill-add   创建技能
   skill-on    激活技能            skill-off   废弃技能
+  skill-feedback 记录使用反馈     skill-usage 使用统计
 
 更多: collide, threads, contradictions, blindspots, inspect, vitality
 """,
@@ -720,6 +752,16 @@ def main():
     p = sub.add_parser("skill-propose", help="扫描 Second Brain 产出，自动提名技能")
     p.add_argument("--days", type=int, default=7, help="扫描最近 N 天")
     p.set_defaults(func=cmd_skill_propose)
+
+    p = sub.add_parser("skill-feedback", help="记录技能使用反馈")
+    p.add_argument("skill_id", help="技能 ID")
+    p.add_argument("outcome", choices=["success", "failure"], help="使用结果")
+    p.add_argument("--query", default="", help="触发查询")
+    p.add_argument("--context", default="", help="反馈详情")
+    p.set_defaults(func=cmd_skill_feedback)
+
+    p = sub.add_parser("skill-usage", help="查看技能使用统计")
+    p.set_defaults(func=cmd_skill_usage)
 
     # ── Second Brain ────
     p = sub.add_parser("collide", help="灵感碰撞 (从记忆中发现联系)")
