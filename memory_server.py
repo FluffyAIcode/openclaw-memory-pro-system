@@ -1338,6 +1338,21 @@ class MemoryHandler(BaseHTTPRequestHandler):
             from second_brain.knowledge_graph import kg
             self._respond(200, kg.stats())
 
+        elif self.path == "/kg/graph":
+            from second_brain.knowledge_graph import kg
+            kg._ensure_loaded()
+            nodes = [n.to_dict() for n in kg.get_all_nodes()]
+            edges = []
+            for src, tgt, data in kg._graph.edges(data=True):
+                edges.append({
+                    "source_id": src,
+                    "target_id": tgt,
+                    "edge_type": data.get("edge_type", "unknown"),
+                    "weight": data.get("weight", 0.5),
+                    "evidence": data.get("evidence", ""),
+                })
+            self._respond(200, {"nodes": nodes, "edges": edges})
+
         elif self.path == "/kg/internalization":
             from second_brain.internalization import internalization_manager
             self._respond(200, internalization_manager.status())

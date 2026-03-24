@@ -28,6 +28,8 @@ setup(
         ],
         "web": [
             "streamlit>=1.32.0",
+            "streamlit-agraph>=0.0.45",
+            "plotly>=5.18.0",
         ],
         "full": [
             "torch>=2.0.0",
@@ -35,6 +37,8 @@ setup(
             "einops>=0.8.0",
             "lancedb>=0.10.0",
             "streamlit>=1.32.0",
+            "streamlit-agraph>=0.0.45",
+            "plotly>=5.18.0",
         ],
     },
     py_modules=[

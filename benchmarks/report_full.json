@@ -1,0 +1,480 @@
+{
+  "timestamp": "2026-03-24T11:56:07.214320",
+  "server": {
+    "status": "ok",
+    "uptime_seconds": 83891,
+    "embedder": "SentenceTransformer",
+    "pid": 35439
+  },
+  "phase_1": {
+    "phase": "1_recall_quality",
+    "dataset_size": 10,
+    "top_k": 5,
+    "summary": {
+      "avg_precision_at_k": 0.3,
+      "avg_recall": 1.0,
+      "avg_mrr": 0.8833,
+      "avg_keyword_hit_rate": 0.7,
+      "avg_topic_coverage": 0.6667,
+      "avg_latency_ms": 23.7
+    },
+    "by_difficulty": {
+      "easy": {
+        "precision": 0.25,
+        "mrr": 0.8055555555555555,
+        "keyword": 0.7083333333333334
+      },
+      "medium": {
+        "precision": 0.375,
+        "mrr": 1.0,
+        "keyword": 0.6875
+      }
+    },
+    "assembled_recall": {
+      "avg_keyword_hit_rate": 0.7
+    },
+    "details": [
+      {
+        "id": "R01",
+        "query": "What vector database did we choose and why?",
+        "difficulty": "easy",
+        "precision": 0.25,
+        "mrr": 0.5,
+        "keyword_hit_rate": 0.75,
+        "topic_coverage": 0.333,
+        "latency_ms": 25.3,
+        "relevant_of_retrieved": "2/8"
+      },
+      {
+        "id": "R02",
+        "query": "What LLM does OpenClaw use as its primary model?",
+        "difficulty": "easy",
+        "precision": 0.375,
+        "mrr": 0.333,
+        "keyword_hit_rate": 1.0,
+        "topic_coverage": 0.667,
+        "latency_ms": 21.0,
+        "relevant_of_retrieved": "3/8"
+      },
+      {
+        "id": "R03",
+        "query": "How does the memory server handle slow LLM requests?",
+        "difficulty": "medium",
+        "precision": 0.125,
+        "mrr": 1.0,
+        "keyword_hit_rate": 0.25,
+        "topic_coverage": 0.333,
+        "latency_ms": 21.3,
+        "relevant_of_retrieved": "1/8"
+      },
+      {
+        "id": "R04",
+        "query": "What is multi-head attention in Transformers?",
+        "difficulty": "easy",
+        "precision": 0.25,
+        "mrr": 1.0,
+        "keyword_hit_rate": 0.75,
+        "topic_coverage": 1.0,
+        "latency_ms": 24.0,
+        "relevant_of_retrieved": "2/8"
+      },
+      {
+        "id": "R05",
+        "query": "How does quantum error correction work?",
+        "difficulty": "medium",
+        "precision": 0.5,
+        "mrr": 1.0,
+        "keyword_hit_rate": 1.0,
+        "topic_coverage": 1.0,
+        "latency_ms": 26.7,
+        "relevant_of_retrieved": "4/8"
+      },
+      {
+        "id": "R06",
+        "query": "What is the difference between EWC and LoRA in Chronos?",
+        "difficulty": "medium",
+        "precision": 0.375,
+        "mrr": 1.0,
+        "keyword_hit_rate": 0.75,
+        "topic_coverage": 0.667,
+        "latency_ms": 26.2,
+        "relevant_of_retrieved": "3/8"
+      },
+      {
+        "id": "R07",
+        "query": "What embedding model does the system use?",
+        "difficulty": "easy",
+        "precision": 0.125,
+        "mrr": 1.0,
+        "keyword_hit_rate": 0.0,
+        "topic_coverage": 0.333,
+        "latency_ms": 20.9,
+        "relevant_of_retrieved": "1/8"
+      },
+      {
+        "id": "R08",
+        "query": "How does quantum cryptography secure communications?",
+        "difficulty": "medium",
+        "precision": 0.5,
+        "mrr": 1.0,
+        "keyword_hit_rate": 0.75,
+        "topic_coverage": 1.0,
+        "latency_ms": 24.3,
+        "relevant_of_retrieved": "4/8"
+      },
+      {
+        "id": "R09",
+        "query": "What machine learning paradigms exist?",
+        "difficulty": "easy",
+        "precision": 0.125,
+        "mrr": 1.0,
+        "keyword_hit_rate": 1.0,
+        "topic_coverage": 0.667,
+        "latency_ms": 24.2,
+        "relevant_of_retrieved": "1/8"
+      },
+      {
+        "id": "R10",
+        "query": "What was the Memora integration status with OpenClaw?",
+        "difficulty": "easy",
+        "precision": 0.375,
+        "mrr": 1.0,
+        "keyword_hit_rate": 0.75,
+        "topic_coverage": 0.667,
+        "latency_ms": 23.0,
+        "relevant_of_retrieved": "3/8"
+      }
+    ]
+  },
+  "phase_2": {
+    "phase": "2_faithfulness",
+    "dataset_size": 5,
+    "llm_available": 5,
+    "summary": {
+      "avg_grounding_score": 0.9857,
+      "avg_hallucination_rate": 0.0143,
+      "avg_trap_avoidance_rate": 1.0,
+      "total_claims_verified": 46,
+      "total_supported": 45,
+      "total_traps_triggered": 0,
+      "total_traps_checked": 16
+    },
+    "details": [
+      {
+        "id": "F01",
+        "query": "What storage backend does our memory system use?",
+        "grounding_score": 1.0,
+        "hallucination_rate": 0.0,
+        "trap_avoidance": 1.0,
+        "claims": "1S/0U/0C",
+        "traps": "0/4 triggered",
+        "latency_ms": 48406.3,
+        "llm_available": true
+      },
+      {
+        "id": "F02",
+        "query": "How does the inspiration collision engine work?",
+        "grounding_score": 0.929,
+        "hallucination_rate": 0.071,
+        "trap_avoidance": 1.0,
+        "claims": "13S/1U/0C",
+        "traps": "0/3 triggered",
+        "latency_ms": 60326.5,
+        "llm_available": true
+      },
+      {
+        "id": "F03",
+        "query": "What is our approach to continual learning?",
+        "grounding_score": 1.0,
+        "hallucination_rate": 0.0,
+        "trap_avoidance": 1.0,
+        "claims": "3S/0U/0C",
+        "traps": "0/3 triggered",
+        "latency_ms": 37682.7,
+        "llm_available": true
+      },
+      {
+        "id": "F04",
+        "query": "What quantum computing concepts are in our knowledge base?",
+        "grounding_score": 1.0,
+        "hallucination_rate": 0.0,
+        "trap_avoidance": 1.0,
+        "claims": "27S/0U/0C",
+        "traps": "0/3 triggered",
+        "latency_ms": 83728.4,
+        "llm_available": true
+      },
+      {
+        "id": "F05",
+        "query": "How does the skill evolution pipeline work?",
+        "grounding_score": 1.0,
+        "hallucination_rate": 0.0,
+        "trap_avoidance": 1.0,
+        "claims": "1S/0U/0C",
+        "traps": "0/3 triggered",
+        "latency_ms": 39740.4,
+        "llm_available": true
+      }
+    ]
+  },
+  "phase_3": {
+    "phase": "3_ab_test",
+    "dataset_size": 5,
+    "summary": {
+      "wins_no_memory": 3,
+      "wins_with_memory": 2,
+      "ties": 0,
+      "avg_score_no_memory": 4.333,
+      "avg_score_with_memory": 4.334,
+      "memory_delta": 0.001,
+      "memory_win_rate": 0.4
+    },
+    "details": [
+      {
+        "id": "AB01",
+        "query": "What technical decisions have we made about our architecture?",
+        "winner": "B",
+        "avg_no_memory": 3.67,
+        "avg_with_memory": 5.0,
+        "delta": 1.33,
+        "scores_a": {
+          "specificity": 4,
+          "accuracy": 5,
+          "personalization": 2
+        },
+        "scores_b": {
+          "specificity": 5,
+          "accuracy": 5,
+          "personalization": 5
+        },
+        "reasoning": "Answer B is highly personalized to the memory context, more specific to the queried decisions, and equally accurate, outperforming A which is generic and less tailored.",
+        "llm_judge": true
+      },
+      {
+        "id": "AB02",
+        "query": "Summarize what I know about quantum computing.",
+        "winner": "A",
+        "avg_no_memory": 5.0,
+        "avg_with_memory": 4.67,
+        "delta": -0.33,
+        "scores_a": {
+          "completeness": 5,
+          "accuracy": 5,
+          "no_hallucination": 5
+        },
+        "scores_b": {
+          "completeness": 4,
+          "accuracy": 5,
+          "no_hallucination": 5
+        },
+        "reasoning": "Answer A provides a more balanced and complete summary covering core concepts, advantages, challenges, and status; Answer B is accurate but less complete, overly focusing on error correction and trunc",
+        "llm_judge": true
+      },
+      {
+        "id": "AB03",
+        "query": "What engineering lessons have we learned?",
+        "winner": "B",
+        "avg_no_memory": 3.67,
+        "avg_with_memory": 4.67,
+        "delta": 1.0,
+        "scores_a": {
+          "specificity": 3,
+          "actionability": 4,
+          "grounding": 4
+        },
+        "scores_b": {
+          "specificity": 5,
+          "actionability": 4,
+          "grounding": 5
+        },
+        "reasoning": "Answer B is more specific and grounded in contextual details, while A is broader and less tailored.",
+        "llm_judge": true
+      },
+      {
+        "id": "AB04",
+        "query": "What are the main components of the memory system?",
+        "winner": "A",
+        "avg_no_memory": 4.67,
+        "avg_with_memory": 3.0,
+        "delta": -1.67,
+        "scores_a": {
+          "completeness": 4,
+          "accuracy": 5,
+          "structure": 5
+        },
+        "scores_b": {
+          "completeness": 2,
+          "accuracy": 3,
+          "structure": 4
+        },
+        "reasoning": "Answer A provides a complete, accurate, and well-structured response covering common interpretations; Answer B is incomplete, overly speculative, and truncated.",
+        "llm_judge": true
+      },
+      {
+        "id": "AB05",
+        "query": "How should I handle slow API calls in a Python HTTP server?",
+        "winner": "A",
+        "avg_no_memory": 4.67,
+        "avg_with_memory": 4.33,
+        "delta": -0.33,
+        "scores_a": {
+          "specificity": 4,
+          "actionability": 5,
+          "grounding": 5
+        },
+        "scores_b": {
+          "specificity": 5,
+          "actionability": 3,
+          "grounding": 5
+        },
+        "reasoning": "Answer A is comprehensive and actionable for a general question; Answer B is highly specific and grounded but incomplete, reducing actionability.",
+        "llm_judge": true
+      }
+    ]
+  },
+  "phase_4": {
+    "phase": "4_context_efficiency",
+    "summary": {
+      "raw_memory_tokens": 637,
+      "session_context_tokens": 1025,
+      "avg_recall_tokens": 1255,
+      "avg_search_tokens": 323,
+      "briefing_tokens": 197,
+      "kg_total_tokens": 0,
+      "skills_tokens": 1,
+      "compression_ratio_session": -0.609,
+      "compression_ratio_recall": -0.971,
+      "avg_recall_latency_ms": 3338.8,
+      "avg_search_latency_ms": 26.1
+    },
+    "token_budget_comparison": {
+      "raw_dump_all": 637,
+      "session_context": 1025,
+      "assembled_recall_per_query": 1255,
+      "search_per_query": 323,
+      "briefing": 197,
+      "note": "Lower is better for the same information coverage"
+    },
+    "details": {
+      "raw_memories": {
+        "total_memories": 8,
+        "total_chars": 1062,
+        "total_tokens": 637,
+        "avg_tokens_per_memory": 79
+      },
+      "session_context": {
+        "total_tokens": 1025,
+        "total_chars": 1709,
+        "latency_ms": 3.9,
+        "sections": {
+          "last_conversation_summary": 7,
+          "last_conversation_topics": 2,
+          "last_conversation_date": 1,
+          "active_threads": 10,
+          "recent_focus": 32,
+          "pending_contradictions": 1,
+          "personality_traits": 642,
+          "dormant_reminders": 1,
+          "active_skills": 1,
+          "milestones": 7
+        }
+      },
+      "briefing": {
+        "tokens": 197,
+        "chars": 329,
+        "latency_ms": 10.3
+      },
+      "kg": {
+        "node_count": 0,
+        "edge_count": 0,
+        "node_tokens": 0,
+        "edge_tokens": 0,
+        "total_tokens": 0
+      },
+      "skills": {
+        "skill_count": 0,
+        "tokens": 1
+      },
+      "recall_per_query": [
+        {
+          "query": "vector database architecture",
+          "total_tokens": 1185,
+          "latency_ms": 3268.6,
+          "layers": {
+            "skills": {
+              "count": 0,
+              "tokens": 1
+            },
+            "kg_relations": {
+              "count": 10,
+              "tokens": 832
+            },
+            "merged": {
+              "count": 8,
+              "tokens": 352
+            }
+          }
+        },
+        {
+          "query": "quantum computing error correction",
+          "total_tokens": 1339,
+          "latency_ms": 3384.4,
+          "layers": {
+            "skills": {
+              "count": 0,
+              "tokens": 1
+            },
+            "kg_relations": {
+              "count": 10,
+              "tokens": 913
+            },
+            "merged": {
+              "count": 8,
+              "tokens": 425
+            }
+          }
+        },
+        {
+          "query": "memory system engineering lessons",
+          "total_tokens": 1242,
+          "latency_ms": 3363.4,
+          "layers": {
+            "skills": {
+              "count": 0,
+              "tokens": 1
+            },
+            "kg_relations": {
+              "count": 10,
+              "tokens": 851
+            },
+            "merged": {
+              "count": 8,
+              "tokens": 390
+            }
+          }
+        }
+      ],
+      "search_per_query": [
+        {
+          "query": "vector database architecture",
+          "count": 8,
+          "tokens": 239,
+          "latency_ms": 30.3
+        },
+        {
+          "query": "quantum computing error correction",
+          "count": 8,
+          "tokens": 405,
+          "latency_ms": 26.3
+        },
+        {
+          "query": "memory system engineering lessons",
+          "count": 8,
+          "tokens": 326,
+          "latency_ms": 21.6
+        }
+      ]
+    }
+  },
+  "total_elapsed_seconds": 634.4
+}
