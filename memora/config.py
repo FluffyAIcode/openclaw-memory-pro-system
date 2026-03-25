@@ -37,7 +37,6 @@ class MemoraConfig(BaseSettings):
     digest_batch_size: int = 50
 
     use_zfs_snapshot: bool = False
-    vllm_url: str = "http://localhost:8000/v1/chat/completions"
 
     def model_post_init(self, __context):
         base = self.base_dir

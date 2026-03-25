@@ -44,6 +44,8 @@ class SecondBrainConfig(BaseSettings):
     insight_novelty_threshold: int = 4
 
     max_search_candidates: int = 20
+    attention_window_days: int = 3
+    attention_recency_weight: float = 0.7
 
     relation_extraction_min_importance: float = 0.4
     kg_candidate_top_k: int = 20

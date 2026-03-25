@@ -1,7 +1,7 @@
 """
 记忆提炼 — 读取近期 daily 记录并生成长期摘要。
 当前实现：合并近 N 天的 daily 文件内容；
-vLLM 摘要生成需配置 config.vllm_url 后启用。
+LLM 摘要生成通过 llm_client 实现。
 """
 
 import logging

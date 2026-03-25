@@ -83,14 +83,9 @@ or uses a **placeholder/fallback** instead of a real implementation. For each en
 
 ---
 
-## 7. Memora — vLLM URL (Unused)
+## 7. ~~Memora — vLLM URL (Unused)~~ **RESOLVED**
 
-| | |
-|-|-|
-| **File** | `memora/config.py` (line 40), `memora/config.yaml` (line 15) |
-| **What's Stubbed** | vLLM endpoint for local LLM inference |
-| **Behavior** | `vllm_url` is configured as `http://localhost:8000/v1/chat/completions` but is **never referenced** by any code in the actual pipeline. It was originally intended for digest summarization but `llm_client.py` (xAI Grok API) now handles that. |
-| **To Make Real** | Remove the dead config field, or wire it into `llm_client.py` as an alternative backend for local deployments. |
+Removed in v0.0.7. The dead `vllm_url` config field was deleted from `config.py` and `config.yaml`. LLM inference uses `llm_client.py` (xAI Grok API).
 
 ---
 
@@ -106,27 +101,17 @@ or uses a **placeholder/fallback** instead of a real implementation. For each en
 
 ---
 
-## 9. MSA — Interleave Sufficiency Check (Heuristic)
+## 9. ~~MSA — Interleave Sufficiency Check (Heuristic)~~ **UPGRADED**
 
-| | |
-|-|-|
-| **File** | `msa/interleave.py` |
-| **Lines** | `_is_sufficient()` method |
-| **What's Stubbed** | LLM-based answer quality assessment |
-| **Behavior** | Determines if an intermediate answer is "sufficient" using simple heuristics: minimum length (50 chars) and checking for keywords like "don't know", "not enough", "unclear". No actual quality evaluation. |
-| **To Make Real** | Use an LLM call to evaluate whether the answer adequately addresses the query, or implement a trained classifier. |
+Now uses `llm_client.generate()` for LLM-powered YES/NO sufficiency judgement.
+Falls back to keyword heuristic when LLM is unavailable.
 
 ---
 
-## 10. MSA — Interleave Reformulation (String Concatenation)
+## 10. ~~MSA — Interleave Reformulation (String Concatenation)~~ **UPGRADED**
 
-| | |
-|-|-|
-| **File** | `msa/interleave.py` |
-| **Lines** | `_reformulate()` method |
-| **What's Stubbed** | LLM-powered query refinement |
-| **Behavior** | Simply concatenates the original question with the intermediate answer using a fixed template: `"{original}, considering: {answer[:200]}"`. No real query reformulation or reasoning. |
-| **To Make Real** | Use `llm_client.generate()` to intelligently reformulate the query based on what information is still missing from the intermediate answer. |
+Now uses `llm_client.generate()` for intelligent query reformulation.
+Falls back to string concatenation when LLM is unavailable.
 
 ---
 

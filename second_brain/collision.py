@@ -201,16 +201,125 @@ def _filter_pool(pool: Dict[str, List[dict]]) -> Dict[str, List[dict]]:
 
 
 class CollisionEngine:
-    """Generates creative insights by colliding memories across layers."""
+    """Generates creative insights by colliding memories across layers.
+
+    Attention Focus: extracts the user's current topics of interest from
+    recent memories (last N days) and biases anchor selection toward them.
+    """
 
     def __init__(self):
         self._insights_path = config.insights_path
         self._insights_path.mkdir(parents=True, exist_ok=True)
+        self._attention_focus: List[str] = []
+        self._attention_updated: Optional[datetime] = None
+
+    def _refresh_attention_focus(self, all_flat: List[dict]):
+        """Extract current attention topics from the most recent memories."""
+        now = datetime.now()
+        if (self._attention_updated and
+                (now - self._attention_updated).total_seconds() < 3600):
+            return
+
+        cutoff = now - timedelta(days=config.attention_window_days)
+        recent_texts = []
+        for e in all_flat:
+            ts = _safe_parse_ts(e.get("timestamp", ""))
+            if ts and ts >= cutoff:
+                content = e.get("content", "")
+                if content and not _is_collision_output(content):
+                    recent_texts.append(content[:300])
+
+        if not recent_texts:
+            self._attention_focus = []
+            self._attention_updated = now
+            return
+
+        try:
+            import llm_client
+            if llm_client.is_available():
+                sample = "\n---\n".join(recent_texts[:20])
+                result = llm_client.generate(
+                    prompt=(
+                        f"Based on these recent memory entries, extract 3-5 keywords "
+                        f"representing the user's current focus topics. "
+                        f"Output ONLY comma-separated keywords, nothing else.\n\n{sample}"
+                    ),
+                    system="Extract focus keywords. Output only comma-separated keywords.",
+                    max_tokens=60,
+                    temperature=0.2,
+                )
+                if result:
+                    self._attention_focus = [
+                        k.strip().lower() for k in result.split(",")
+                        if k.strip()
+                    ][:5]
+                    logger.info("Attention focus updated: %s", self._attention_focus)
+        except Exception as e:
+            logger.debug("Attention focus extraction failed: %s", e)
+
+        self._attention_updated = now
+
+    def _recency_weighted_choice(self, entries: List[dict]) -> dict:
+        """Select an entry with probability proportional to recency."""
+        if not entries:
+            return random.choice(entries)
+
+        now = datetime.now()
+        weights = []
+        for e in entries:
+            ts = _safe_parse_ts(e.get("timestamp", ""))
+            if ts:
+                age_days = max((now - ts).total_seconds() / 86400, 0.1)
+                w = 1.0 / (1.0 + age_days)
+            else:
+                w = 0.1
+            weights.append(w)
+
+        total = sum(weights)
+        if total == 0:
+            return random.choice(entries)
+
+        r = random.random() * total
+        cumulative = 0
+        for i, w in enumerate(weights):
+            cumulative += w
+            if cumulative >= r:
+                return entries[i]
+        return entries[-1]
+
+    def _attention_boosted_choice(self, entries: List[dict]) -> dict:
+        """Select an entry biased toward current attention focus topics."""
+        if not self._attention_focus or not entries:
+            return self._recency_weighted_choice(entries)
+
+        now = datetime.now()
+        weights = []
+        for e in entries:
+            ts = _safe_parse_ts(e.get("timestamp", ""))
+            recency = 1.0 / (1.0 + max((now - ts).total_seconds() / 86400, 0.1)) if ts else 0.1
+
+            content_lower = e.get("content", "").lower()
+            focus_hits = sum(1 for kw in self._attention_focus if kw in content_lower)
+            focus_boost = 1.0 + focus_hits * config.attention_recency_weight
+
+            weights.append(recency * focus_boost)
+
+        total = sum(weights)
+        if total == 0:
+            return random.choice(entries)
+
+        r = random.random() * total
+        cumulative = 0
+        for i, w in enumerate(weights):
+            cumulative += w
+            if cumulative >= r:
+                return entries[i]
+        return entries[-1]
 
     def collide_round(self, pool: Dict[str, List[dict]]) -> List[Insight]:
         """Execute one round of collisions across the memory pool.
 
-        Uses adaptive strategy weights for selection when available.
+        Uses attention focus + recency weighting for anchor selection.
 
         Args:
             pool: dict with keys memora_vectors, chronos_encoded, digests, msa_docs
@@ -226,6 +335,8 @@ class CollisionEngine:
         if len(all_flat) < 2:
             logger.warning("Too few memories (%d) for collision", len(all_flat))
             return []
+
+        self._refresh_attention_focus(all_flat)
 
         all_strategies = {
             "semantic_bridge": self._semantic_bridge,
@@ -274,7 +385,7 @@ class CollisionEngine:
         if len(memora) < 2:
             return None
 
-        anchor = random.choice(memora)
+        anchor = self._attention_boosted_choice(memora)
         anchor_content = anchor.get("content", "")
 
         try:
@@ -316,7 +427,7 @@ class CollisionEngine:
         if not rich:
             rich = chronos
 
-        pick = random.choice(rich)
+        pick = self._attention_boosted_choice(rich)
 
         search_query = pick.get("content", "")[:200]
         if pick.get("facts"):
@@ -352,7 +463,7 @@ class CollisionEngine:
         if not digests or not memora:
             return None
 
-        digest_pick = random.choice(digests)
+        digest_pick = self._recency_weighted_choice(digests)
 
         now = datetime.now()
         recent_cutoff = now - timedelta(days=7)
@@ -368,7 +479,7 @@ class CollisionEngine:
         if not recent:
             recent = memora[:5]
 
-        recent_pick = random.choice(recent)
+        recent_pick = self._attention_boosted_choice(recent)
         return digest_pick, recent_pick
 
     # ── Strategy 4: Dormant Revival (Any Layer) ───────────────
@@ -392,7 +503,7 @@ class CollisionEngine:
             recent = all_flat[:5]
 
         dormant_pick = dormant[0]
-        recent_pick = random.choice(recent)
+        recent_pick = self._attention_boosted_choice(recent)
 
         if dormant_pick.get("content") == recent_pick.get("content"):
             return None
@@ -421,7 +532,7 @@ class CollisionEngine:
         if not recent or not echoes:
             return None
 
-        return random.choice(recent), random.choice(echoes)
+        return self._attention_boosted_choice(recent), self._recency_weighted_choice(echoes)
 
     # ── Strategy 6: Contradiction-Based (KG-driven) ────────────
 
@@ -499,7 +610,7 @@ class CollisionEngine:
     # ── Insight Generation ────────────────────────────────────
 
     def _generate_insight(self, mem_a: dict, mem_b: dict, strategy: str) -> Insight:
-        """Use LLM to analyze the collision with full structured context."""
+        """Use LLM to analyze the collision with attention focus context."""
         content_a = mem_a.get("content", "")[:500]
         content_b = mem_b.get("content", "")[:500]
         time_a = str(mem_a.get("timestamp", "未知时间"))[:10]
@@ -521,6 +632,12 @@ class CollisionEngine:
                     causal_links=", ".join(causal[:3]) or "无",
                 )
                 break
+
+        if self._attention_focus:
+            structured_context += (
+                f"\n用户当前关注的话题: {', '.join(self._attention_focus)}\n"
+                f"请优先从这些话题的角度分析联系和灵感。\n"
+            )
 
         llm_result = None
         try:

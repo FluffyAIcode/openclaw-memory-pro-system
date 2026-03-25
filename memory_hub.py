@@ -37,21 +37,31 @@ class MemoryHub:
     """
     Unified memory interface.
 
-    Ingestion routing (simplified):
+    Ingestion routing:
       - All text → Memora (primary vector store, dedup-aware)
-      - Long text (>500 chars) → also MSA (document-level)
-      - Chronos buffer → only on explicit force_systems=["chronos"]
+      - Long text (≥100 words) OR high importance (≥0.85) → also MSA
+      - High importance (≥0.85) → also Chronos (structured deep encoding)
       - Always writes daily file
 
     Query routing:
-      - recall → merged Memora + MSA
-      - deep-recall → MSA multi-hop + Memora context
+      - recall → three-layer assembled (skills → KG → evidence)
+      - deep-recall → MSA multi-hop + Memora context + skills
     """
 
     def __init__(self):
         self._memora_bridge = None
         self._chronos_bridge = None
         self._msa_bridge = None
+        self._post_remember_hooks: list = []
+        self._post_recall_hooks: list = []
+
+    def register_post_remember_hook(self, fn):
+        """Register a callback: fn(content: str, importance: float, results: dict)"""
+        self._post_remember_hooks.append(fn)
+
+    def register_post_recall_hook(self, fn):
+        """Register a callback: fn(merged: list, query: str)"""
+        self._post_recall_hooks.append(fn)
 
     @property
     def memora(self):
@@ -156,15 +166,25 @@ class MemoryHub:
 
         logger.info("Memory Hub: remembered %d words via %s (tag=%s)",
                      word_count, ", ".join(results["systems_used"]), tag)
+
+        for hook in self._post_remember_hooks:
+            try:
+                hook(content, importance, results)
+            except Exception as e:
+                logger.warning("Post-remember hook failed: %s", e)
+
         return results
 
-    def recall(self, query: str, top_k: int = 8) -> Dict:
-        """Question-driven assembled recall.
+    def recall(self, query: str, top_k: int = 8,
+               max_tokens: int = 4000) -> Dict:
+        """Question-driven assembled recall with token budget.
 
         Three-layer response:
           1. skills:   matching active skills (highest priority)
           2. kg:       related knowledge nodes + logical relationships
           3. evidence: Memora snippets + MSA documents (raw material)
+
+        max_tokens caps the total content size in merged results.
         """
         results = {
             "query": query,
@@ -206,26 +226,41 @@ class MemoryHub:
 
         merged = []
         for s in results["skills"]:
+            proc = s.get("procedures", "")[:150]
+            body = proc if proc else s["content"][:200]
             merged.append({
-                "content": f"[技能] {s['name']}: {s['content'][:300]}",
+                "content": f"[Skill] {s['name']}: {body}",
                 "score": 1.0,
                 "system": "skill",
                 "metadata": {"skill_id": s["id"], "status": s["status"]},
             })
-        for kg in results["kg_relations"]:
+
+        kg_sorted = sorted(results["kg_relations"],
+                           key=lambda x: x.get("relevance", 0), reverse=True)
+        for kg in kg_sorted[:3]:
+            desc = kg["description"][:150]
             merged.append({
-                "content": f"[知识关系] {kg['description']}",
+                "content": f"[KG] {desc}",
                 "score": 0.9,
                 "system": "kg",
                 "metadata": kg.get("metadata", {}),
             })
+
         merged.extend(results["evidence"])
         merged.sort(key=lambda x: x.get("score", 0), reverse=True)
-        results["merged"] = merged[:top_k]
+        results["merged"] = self._trim_to_budget(merged[:top_k], max_tokens)
 
-        logger.info("Recall: %d skills, %d kg_relations, %d evidence for '%s'",
+        logger.info("Recall: %d skills, %d kg, %d evidence, %d merged (budget %d) for '%s'",
                      len(results["skills"]), len(results["kg_relations"]),
-                     len(results["evidence"]), query[:60])
+                     len(results["evidence"]), len(results["merged"]),
+                     max_tokens, query[:60])
+
+        for hook in self._post_recall_hooks:
+            try:
+                hook(results.get("merged", []), query)
+            except Exception as e:
+                logger.warning("Post-recall hook failed: %s", e)
+
         return results
 
     def deep_recall(self, query: str, max_rounds: int = 3) -> Dict:
@@ -248,6 +283,19 @@ class MemoryHub:
             results["memora_context"] = []
 
         return results
+
+    @staticmethod
+    def _trim_to_budget(merged: list, max_tokens: int) -> list:
+        """Trim merged results to fit within a token budget (1 token ≈ 3 chars)."""
+        result = []
+        budget_used = 0
+        for item in merged:
+            est = len(item.get("content", "")) // 3
+            if budget_used + est > max_tokens and result:
+                break
+            result.append(item)
+            budget_used += est
+        return result
 
     def _recall_skills(self, query: str) -> List[Dict]:
         """Search active skills using vector similarity with keyword fallback."""
@@ -423,10 +471,18 @@ class MemoryHub:
         return st
 
     def _route_ingestion(self, word_count: int, importance: float) -> set:
-        """Simplified routing: Memora always; MSA for long text."""
+        """Smart routing based on text length AND importance.
+
+        Rules:
+          - Memora: always (primary vector store)
+          - MSA:    long text (≥100 words) OR high importance (≥0.85)
+          - Chronos: high importance (≥0.85) — structured deep encoding
+        """
         systems = {"memora"}
-        if word_count >= 100:
+        if word_count >= 100 or importance >= 0.85:
             systems.add("msa")
+        if importance >= 0.85:
+            systems.add("chronos")
         return systems
 
     def _write_daily(self, content: str, source: str,

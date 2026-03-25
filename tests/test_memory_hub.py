@@ -63,13 +63,14 @@ class TestMemoryHub:
             hmod._WORKSPACE = orig_ws
         assert "msa" in result["systems_used"]
 
-    def test_remember_high_importance_no_auto_chronos(self, tmp_path):
-        """In the new architecture, Chronos is NOT auto-routed; only on explicit force."""
+    def test_remember_high_importance_auto_routes_chronos_and_msa(self, tmp_path):
+        """High importance (>=0.85) auto-routes to Chronos AND MSA."""
         hmod = _get_hub_mod()
         orig_ws = hmod._WORKSPACE
         hmod._WORKSPACE = tmp_path
         try:
             hub = self._make_hub(tmp_path)
+            hub._msa_bridge.ingest_and_save.return_value = {"doc_id": "d1", "chunks": 1}
             mock_collector = MagicMock()
             mock_collector.collect.return_value = {"timestamp": "t"}
             mock_vs = MagicMock()
@@ -80,7 +81,9 @@ class TestMemoryHub:
                 result = hub.remember("important", importance=0.95)
         finally:
             hmod._WORKSPACE = orig_ws
-        assert "chronos" not in result["systems_used"]
+        assert "chronos" in result["systems_used"]
+        assert "msa" in result["systems_used"]
+        assert "memora" in result["systems_used"]
 
     def test_remember_force_chronos(self, tmp_path):
         hmod = _get_hub_mod()
@@ -445,10 +448,22 @@ class TestMemoryHub:
 
     def test_route_ingestion(self, tmp_path):
         hub = self._make_hub(tmp_path)
-        assert "memora" in hub._route_ingestion(50, 0.5)
-        assert "msa" in hub._route_ingestion(200, 0.5)
-        # Chronos is no longer auto-routed
-        assert "chronos" not in hub._route_ingestion(50, 0.9)
+        r_low = hub._route_ingestion(50, 0.5)
+        assert "memora" in r_low
+        assert "msa" not in r_low
+        assert "chronos" not in r_low
+
+        r_long = hub._route_ingestion(200, 0.5)
+        assert "msa" in r_long
+        assert "chronos" not in r_long
+
+        r_important = hub._route_ingestion(50, 0.9)
+        assert "msa" in r_important
+        assert "chronos" in r_important
+        assert "memora" in r_important
+
+        r_both = hub._route_ingestion(200, 0.95)
+        assert r_both == {"memora", "msa", "chronos"}
 
     def test_write_daily(self, tmp_path):
         hmod = _get_hub_mod()

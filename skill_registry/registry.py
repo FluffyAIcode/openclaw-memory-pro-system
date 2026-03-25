@@ -28,7 +28,6 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _WORKSPACE = Path(__file__).parent.parent
-SKILLS_BASE_DIR = _WORKSPACE / "skills" / "app_skills"
 
 LOW_UTILITY_THRESHOLD = 0.3
 MIN_USES_FOR_REWRITE = 3
@@ -44,7 +43,14 @@ class Skill:
     __slots__ = ("id", "name", "content", "status", "tags",
                  "source_memories", "version", "created_at", "updated_at",
                  "successes", "failures", "prerequisites", "procedures",
-                 "applicable_scenarios", "inapplicable_scenarios")
+                 "applicable_scenarios", "inapplicable_scenarios",
+                 "action_type", "action_config")
+
+    # action_type values:
+    #   "none"            — passive knowledge text (default, backward-compatible)
+    #   "prompt_template" — agent can use this as a system prompt
+    #   "tool_call"       — binds to an OpenClaw tool
+    #   "webhook"         — calls an external HTTP endpoint
 
     def __init__(self, name: str, content: str, *,
                  skill_id: str = "",
@@ -59,7 +65,9 @@ class Skill:
                  prerequisites: str = "",
                  procedures: str = "",
                  applicable_scenarios: str = "",
-                 inapplicable_scenarios: str = ""):
+                 inapplicable_scenarios: str = "",
+                 action_type: str = "none",
+                 action_config: Dict = None):
         self.id = skill_id or uuid.uuid4().hex[:12]
         self.name = name
         self.content = content
@@ -75,6 +83,8 @@ class Skill:
         self.procedures = procedures
         self.applicable_scenarios = applicable_scenarios
         self.inapplicable_scenarios = inapplicable_scenarios
+        self.action_type = action_type
+        self.action_config = action_config or {}
 
     @property
     def utility_rate(self) -> float:
@@ -105,8 +115,24 @@ class Skill:
                      f"- version: v{self.version}\n")
         return "\n".join(parts)
 
+    def executable_prompt(self) -> Optional[str]:
+        """Build an executable system prompt if action_type is prompt_template."""
+        if self.action_type != "prompt_template" or not self.action_config:
+            return None
+        tpl = self.action_config.get("template", "")
+        if not tpl:
+            return None
+        try:
+            return tpl.format(
+                name=self.name, content=self.content,
+                procedures=self.procedures, prerequisites=self.prerequisites,
+                applicable_scenarios=self.applicable_scenarios,
+            )
+        except (KeyError, IndexError):
+            return tpl
+
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "name": self.name,
             "content": self.content,
@@ -124,7 +150,13 @@ class Skill:
             "procedures": self.procedures,
             "applicable_scenarios": self.applicable_scenarios,
             "inapplicable_scenarios": self.inapplicable_scenarios,
+            "action_type": self.action_type,
+            "action_config": self.action_config,
         }
+        prompt = self.executable_prompt()
+        if prompt:
+            d["executable_prompt"] = prompt
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Skill":
@@ -144,6 +176,8 @@ class Skill:
             procedures=d.get("procedures", ""),
             applicable_scenarios=d.get("applicable_scenarios", ""),
             inapplicable_scenarios=d.get("inapplicable_scenarios", ""),
+            action_type=d.get("action_type", "none"),
+            action_config=d.get("action_config", {}),
         )
 
     def __repr__(self):
@@ -191,14 +225,22 @@ class SkillRegistry:
             prerequisites: str = "",
             procedures: str = "",
             applicable_scenarios: str = "",
-            inapplicable_scenarios: str = "") -> Skill:
-        """Register a new skill (defaults to draft)."""
+            inapplicable_scenarios: str = "",
+            action_type: str = "",
+            action_config: Dict = None) -> Skill:
+        """Register a new skill (defaults to draft). Auto-generates prompt_template if not provided."""
+        if not action_type and (procedures or content):
+            action_type = "prompt_template"
+            action_config = self._build_default_prompt_template(
+                name, content, prerequisites, procedures, applicable_scenarios)
         skill = Skill(name, content, tags=tags,
                       source_memories=source_memories, status=status,
                       prerequisites=prerequisites,
                       procedures=procedures,
                       applicable_scenarios=applicable_scenarios,
-                      inapplicable_scenarios=inapplicable_scenarios)
+                      inapplicable_scenarios=inapplicable_scenarios,
+                      action_type=action_type or "none",
+                      action_config=action_config or {})
         skills = self._load()
         skills[skill.id] = skill
         self._ensure_dir()
@@ -206,6 +248,20 @@ class SkillRegistry:
             f.write(json.dumps(skill.to_dict(), ensure_ascii=False) + "\n")
         logger.info("Skill registered: %s (%s)", skill.name, skill.id)
         return skill
+
+    @staticmethod
+    def _build_default_prompt_template(name, content, prerequisites, procedures, applicable) -> Dict:
+        parts = [f"You are an expert in「{name}」."]
+        if prerequisites:
+            parts.append(f"Prerequisites: {prerequisites}")
+        if procedures:
+            parts.append(f"Steps:\n{procedures}")
+        else:
+            parts.append(f"Knowledge:\n{content[:500]}")
+        if applicable:
+            parts.append(f"Apply when: {applicable}")
+        parts.append("Use the above to help the user solve their problem.")
+        return {"template": "\n\n".join(parts)}
 
     def promote(self, skill_id: str) -> Optional[Skill]:
         """Promote a draft skill to active."""

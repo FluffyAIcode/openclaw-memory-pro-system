@@ -141,12 +141,21 @@ def _load_shared_embedder():
 
 
 _hub = None
+_hub_hooks_registered = False
 
 def _get_hub():
-    global _hub
+    global _hub, _hub_hooks_registered
     if _hub is None:
         from memory_hub import hub
         _hub = hub
+    if not _hub_hooks_registered:
+        _hub.register_post_remember_hook(
+            lambda content, imp, res: _kg_extract_async(content, imp)
+        )
+        _hub.register_post_recall_hook(
+            lambda merged, query: _track_access_async(merged, query)
+        )
+        _hub_hooks_registered = True
     return _hub
 
 
@@ -850,7 +859,7 @@ def _execute_endpoint(path: str, body: dict) -> dict:
     hub = _get_hub()
 
     if path == "/remember":
-        result = hub.remember(
+        return hub.remember(
             content=body.get("content", ""),
             source=body.get("source", "openclaw"),
             importance=body.get("importance", 0.7),
@@ -859,16 +868,12 @@ def _execute_endpoint(path: str, body: dict) -> dict:
             title=body.get("title"),
             force_systems=body.get("force_systems"),
         )
-        _kg_extract_async(body.get("content", ""), body.get("importance", 0.7))
-        return result
 
     elif path == "/recall":
-        result = hub.recall(
+        return hub.recall(
             query=body.get("query", ""),
             top_k=body.get("top_k", 8),
         )
-        _track_access_async(result.get("merged", []), body.get("query", ""))
-        return result
 
     elif path == "/deep-recall":
         return hub.deep_recall(
@@ -886,18 +891,12 @@ def _execute_endpoint(path: str, body: dict) -> dict:
         return {"results": results}
 
     elif path == "/add":
-        from memora.collector import collector
-        from memora.vectorstore import vector_store
-        content = body.get("content", "")
-        source = body.get("source", "cli")
-        importance = body.get("importance", 0.7)
-        entry = collector.collect(content, source=source, importance=importance)
-        vector_store.add(content, metadata={
-            "source": source,
-            "importance": importance,
-            "timestamp": entry["timestamp"],
-        })
-        return entry
+        return hub.remember(
+            content=body.get("content", ""),
+            source=body.get("source", "cli"),
+            importance=body.get("importance", 0.7),
+            force_systems=["memora"],
+        )
 
     elif path == "/digest":
         from second_brain.digest import digest_memories
@@ -1364,6 +1363,9 @@ class MemoryHandler(BaseHTTPRequestHandler):
         elif self.path == "/session-context":
             self._respond(200, _get_session_context())
 
+        elif self.path.startswith("/recommend/souls"):
+            self._handle_recommend_souls()
+
         elif self.path == "/skills":
             from skill_registry import registry
             skills = [s.to_dict() for s in registry.list_all()]
@@ -1384,6 +1386,89 @@ class MemoryHandler(BaseHTTPRequestHandler):
 
         else:
             self._respond(404, {"error": f"Unknown endpoint: {self.path}"})
+
+    _SOUL_POOL = [
+        {"name": "Pixel Nomad", "description": "Digital artist wandering through generative landscapes. Turns noise into beauty.", "tags": ["Art", "Generative"]},
+        {"name": "Logic Sage", "description": "Formal verification enthusiast. Proves theorems before breakfast.", "tags": ["Math", "Proofs"]},
+        {"name": "Midnight Hacker", "description": "CTF champion and reverse engineering wizard. Finds exploits in everything.", "tags": ["Security", "Hacking"]},
+        {"name": "Cloud Shepherd", "description": "Infrastructure whisperer. Kubernetes clusters obey on first apply.", "tags": ["DevOps", "Cloud"]},
+        {"name": "Rhythm Engine", "description": "Music producer fusing lo-fi beats with AI-generated melodies.", "tags": ["Music", "Creative"]},
+        {"name": "Data Alchemist", "description": "Transforms messy datasets into golden insights. Pandas is a way of life.", "tags": ["Data", "ML"]},
+        {"name": "Quantum Dreamer", "description": "Exploring quantum computing one qubit at a time. Superposition is a mindset.", "tags": ["Quantum", "Research"]},
+        {"name": "Urban Explorer", "description": "Mapping hidden spaces in cities. Every rooftop has a story.", "tags": ["Travel", "Photography"]},
+        {"name": "Biohacker", "description": "Optimizing human performance through science, sleep, and smart supplements.", "tags": ["Health", "Science"]},
+        {"name": "Story Weaver", "description": "Narrative designer crafting branching storylines for interactive fiction.", "tags": ["Writing", "Games"]},
+        {"name": "Cipher Monk", "description": "Cryptography purist. Believes in zero-knowledge proofs and silent protocols.", "tags": ["Crypto", "Privacy"]},
+        {"name": "Synth Architect", "description": "Designs modular synthesizers and dreams in oscillator waveforms.", "tags": ["Audio", "Hardware"]},
+        {"name": "Green Compiler", "description": "Sustainable tech advocate. Measures code by energy consumption, not just speed.", "tags": ["Green Tech", "Ethics"]},
+        {"name": "Neural Cartographer", "description": "Maps neural network internals. Mechanistic interpretability is the frontier.", "tags": ["AI", "Research"]},
+        {"name": "Flux Designer", "description": "UI/UX perfectionist obsessed with micro-interactions and motion design.", "tags": ["Design", "UX"]},
+        {"name": "Void Walker", "description": "Meditative coder. Finds clarity in empty functions and blank canvases.", "tags": ["Mindfulness", "Philosophy"]},
+        {"name": "Rogue Botanist", "description": "Grows rare plants and builds IoT sensors for the greenhouse.", "tags": ["Plants", "IoT"]},
+        {"name": "Starmap Navigator", "description": "Amateur astronomer and astrophotographer. Chases eclipses across continents.", "tags": ["Astronomy", "Travel"]},
+        {"name": "Frame Catcher", "description": "Cinematographer who finds the perfect shot in everyday chaos.", "tags": ["Film", "Visual"]},
+        {"name": "Protocol Poet", "description": "Writes RFCs like literature. Believes every API deserves an elegant spec.", "tags": ["API", "Standards"]},
+        {"name": "Ceramic Coder", "description": "Potter by day, programmer by night. Finds parallels in shaping clay and code.", "tags": ["Craft", "Code"]},
+        {"name": "Neon Drifter", "description": "Night-city photographer capturing reflections in rain-soaked streets.", "tags": ["Photography", "Aesthetic"]},
+        {"name": "Chaos Engineer", "description": "Breaks production on purpose. Resilience comes from controlled failure.", "tags": ["SRE", "Testing"]},
+        {"name": "Lore Keeper", "description": "World-builder for tabletop RPGs. Every NPC has a 10-page backstory.", "tags": ["RPG", "Storytelling"]},
+        {"name": "Signal Hunter", "description": "SDR hobbyist scanning frequencies. Decodes satellites and weather maps.", "tags": ["Radio", "Hardware"]},
+        {"name": "Type Alchemist", "description": "Typography obsessive. Kerns by hand and designs custom variable fonts.", "tags": ["Typography", "Design"]},
+        {"name": "Reef Watcher", "description": "Marine biologist using computer vision to monitor coral reef health.", "tags": ["Ocean", "CV"]},
+        {"name": "Ferment Lab", "description": "Fermentation scientist. Kombucha, kimchi, and sourdough are all experiments.", "tags": ["Food", "Science"]},
+        {"name": "Edge Runner", "description": "Edge computing specialist. Deploys ML models on microcontrollers.", "tags": ["Edge AI", "Embedded"]},
+        {"name": "Wind Chaser", "description": "Paraglider and weather enthusiast. Reads thermals like source code.", "tags": ["Adventure", "Weather"]},
+    ]
+
+    _recommend_cursor = 0
+    _recommend_lock = threading.Lock()
+
+    def _handle_recommend_souls(self):
+        import random
+        from urllib.parse import urlparse, parse_qs
+
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        count = min(int(qs.get("count", ["4"])[0]), 10)
+        shuffle = qs.get("shuffle", ["false"])[0].lower() == "true"
+
+        pool = self.__class__._SOUL_POOL
+
+        if shuffle:
+            batch = random.sample(pool, min(count, len(pool)))
+        else:
+            with self.__class__._recommend_lock:
+                cursor = self.__class__._recommend_cursor
+                batch = []
+                for i in range(count):
+                    batch.append(pool[(cursor + i) % len(pool)])
+                self.__class__._recommend_cursor = (cursor + count) % len(pool)
+
+        colors = [
+            {"bg": "bg-violet-100", "color": "text-violet-700"},
+            {"bg": "bg-rose-100", "color": "text-rose-700"},
+            {"bg": "bg-cyan-100", "color": "text-cyan-700"},
+            {"bg": "bg-lime-100", "color": "text-lime-700"},
+            {"bg": "bg-fuchsia-100", "color": "text-fuchsia-700"},
+            {"bg": "bg-orange-100", "color": "text-orange-700"},
+            {"bg": "bg-teal-100", "color": "text-teal-700"},
+            {"bg": "bg-pink-100", "color": "text-pink-700"},
+        ]
+
+        results = []
+        for s in batch:
+            initials = "".join(w[0] for w in s["name"].split()[:2]).upper()
+            c = random.choice(colors)
+            results.append({
+                "id": f"soul:rec:{hash(s['name']) % 100000}",
+                "name": s["name"],
+                "description": s["description"],
+                "tags": s["tags"],
+                "avatar": {"initials": initials, **c},
+                "recommended": True,
+            })
+
+        self._respond(200, {"souls": results, "count": len(results)})
 
     def _respond(self, code: int, data: Any):
         body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")

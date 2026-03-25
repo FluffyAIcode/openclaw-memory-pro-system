@@ -352,41 +352,66 @@ class TestMemoryInterleave:
         config = MagicMock(max_interleave_rounds=1, top_k=3)
         il = MemoryInterleave(encoder, bank, router, config=config)
         # Default generate_fn should use _default_generate_fn
-        with patch("msa.interleave.llm_client", create=True) as lc:
+        with patch("msa.interleave._llm_client") as lc:
             lc.is_available.return_value = False
             result = il.run("q")
         assert result.final_answer is not None
 
-    def test_is_sufficient(self):
+    def test_is_sufficient_fallback(self):
+        """Test keyword-based fallback when LLM is unavailable."""
         il = self._make_interleave()
-        assert il._is_sufficient("a solid complete answer here!") is True
-        assert il._is_sufficient("i don't know") is False
-        assert il._is_sufficient("") is False
-        assert il._is_sufficient("short") is False
+        with patch("msa.interleave._llm_client") as lc:
+            lc.is_available.return_value = False
+            assert il._is_sufficient("q", "a solid complete answer here!") is True
+            assert il._is_sufficient("q", "i don't know") is False
+            assert il._is_sufficient("q", "") is False
+            assert il._is_sufficient("q", "short") is False
 
-    def test_reformulate(self):
+    def test_is_sufficient_llm(self):
+        """Test LLM-powered branch."""
         il = self._make_interleave()
-        new_q = il._reformulate("original", "some intermediate text")
-        assert "original" in new_q
-        assert "considering" in new_q
+        with patch("msa.interleave._llm_client") as lc:
+            lc.is_available.return_value = True
+            lc.generate.return_value = "YES"
+            assert il._is_sufficient("q", "the answer to this question is 42 exactly") is True
+            lc.generate.return_value = "NO"
+            assert il._is_sufficient("q", "hmm I am not really sure about that") is False
+
+    def test_reformulate_fallback(self):
+        """Test string-concat fallback when LLM is unavailable."""
+        il = self._make_interleave()
+        with patch("msa.interleave._llm_client") as lc:
+            lc.is_available.return_value = False
+            new_q = il._reformulate("original", "some intermediate text")
+        assert "original" in new_q and "considering" in new_q
+
+    def test_reformulate_llm(self):
+        """Test LLM-powered branch."""
+        il = self._make_interleave()
+        with patch("msa.interleave._llm_client") as lc:
+            lc.is_available.return_value = True
+            lc.generate.return_value = "What else about the topic?"
+            new_q = il._reformulate("original", "some text")
+        assert new_q == "What else about the topic?"
 
     def test_default_generate_fn_with_llm(self):
         from msa.interleave import _default_generate_fn
-        with patch("llm_client.is_available", return_value=True), \
-             patch("llm_client.generate", return_value="LLM answer"):
+        with patch("msa.interleave._llm_client") as lc:
+            lc.is_available.return_value = True
+            lc.generate.return_value = "LLM answer"
             result = _default_generate_fn("q", "context")
             assert result == "LLM answer"
 
     def test_default_generate_fn_no_llm(self):
         from msa.interleave import _default_generate_fn
-        with patch("llm_client.is_available", return_value=False):
+        with patch("msa.interleave._llm_client") as lc:
+            lc.is_available.return_value = False
             result = _default_generate_fn("q", "the context")
             assert result == "the context"
 
-    def test_default_generate_fn_import_error(self):
+    def test_default_generate_fn_none_client(self):
         from msa.interleave import _default_generate_fn
-        with patch.dict("sys.modules", {"llm_client": None}):
-            # Should fallback to context
+        with patch("msa.interleave._llm_client", None):
             result = _default_generate_fn("q", "ctx")
             assert result == "ctx"
 

@@ -70,7 +70,7 @@ def main():
         console.print(f"  记忆存储: {config.base_dir.resolve()}")
         console.print(f"  向量条目: {vector_store.count()}")
         console.print(f"  嵌入模型: {config.embedding_model}")
-        console.print(f"  vLLM URL: {config.vllm_url}")
+        console.print(f"  ZFS snapshot: {config.use_zfs_snapshot}")
 
     elif args.command == "init":
         config.ensure_dirs()

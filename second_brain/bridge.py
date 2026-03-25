@@ -404,16 +404,18 @@ class SecondBrainBridge:
         try:
             from memora.vectorstore import vector_store
             raw = vector_store._load()
-            return [
+            entries = [
                 {
                     "content": e.get("content", ""),
-                    "timestamp": e.get("timestamp", ""),
+                    "timestamp": e.get("timestamp", e.get("metadata", {}).get("timestamp", "")),
                     "importance": e.get("metadata", {}).get("importance", 0.5),
                     "metadata": e.get("metadata", {}),
                     "source_system": "memora",
                 }
                 for e in raw if e.get("content")
             ]
+            entries.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+            return entries
         except Exception as e:
             logger.warning("Failed to load Memora vectors: %s", e)
             return []
