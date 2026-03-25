@@ -75,10 +75,24 @@ class ABResult:
     llm_judge_available: bool = True
 
 
+_JUDGE_MODEL = None
+
+def _get_judge_model() -> str:
+    global _JUDGE_MODEL
+    if _JUDGE_MODEL is None:
+        try:
+            from llm_client import FAST_MODEL
+            _JUDGE_MODEL = FAST_MODEL
+        except ImportError:
+            _JUDGE_MODEL = "deepseek/deepseek-chat"
+        logger.info("A/B judge using model: %s", _JUDGE_MODEL)
+    return _JUDGE_MODEL
+
 def _llm_generate(prompt: str, system: str = "", temperature: float = 0.3) -> Optional[str]:
     try:
         from llm_client import generate
-        return generate(prompt, system=system, temperature=temperature, max_tokens=2048)
+        return generate(prompt, system=system, temperature=temperature,
+                        max_tokens=2048, model=_get_judge_model(), timeout=60)
     except Exception as e:
         logger.error("LLM call failed: %s", e)
         return None
@@ -249,8 +263,14 @@ Answer:""",
 def run() -> Dict:
     """Run full Phase 3 A/B benchmark."""
     results = []
-    for entry in AB_TEST_QUERIES:
+    total = len(AB_TEST_QUERIES)
+    for i, entry in enumerate(AB_TEST_QUERIES, 1):
+        print(f"  [{i}/{total}] A/B testing {entry['id']}: {entry['query'][:50]}...",
+              flush=True)
         r = evaluate_single(entry)
+        judge_tag = "LLM" if r.llm_judge_available else "heuristic"
+        print(f"           winner={r.winner} A={r.avg_a:.1f} B={r.avg_b:.1f} "
+              f"({judge_tag})", flush=True)
         results.append(r)
 
     n = len(results)

@@ -89,10 +89,24 @@ class FaithfulnessResult:
     llm_available: bool = True
 
 
+_JUDGE_MODEL = None
+
+def _get_judge_model() -> str:
+    global _JUDGE_MODEL
+    if _JUDGE_MODEL is None:
+        try:
+            from llm_client import FAST_MODEL
+            _JUDGE_MODEL = FAST_MODEL
+        except ImportError:
+            _JUDGE_MODEL = "deepseek/deepseek-chat"
+        logger.info("Faithfulness judge using model: %s", _JUDGE_MODEL)
+    return _JUDGE_MODEL
+
 def _llm_generate(prompt: str, system: str = "", temperature: float = 0.1) -> Optional[str]:
     try:
         from llm_client import generate
-        return generate(prompt, system=system, temperature=temperature, max_tokens=2048)
+        return generate(prompt, system=system, temperature=temperature,
+                        max_tokens=2048, model=_get_judge_model(), timeout=60)
     except Exception as e:
         logger.error("LLM call failed: %s", e)
         return None
@@ -279,8 +293,15 @@ def evaluate_single(entry: dict) -> FaithfulnessResult:
 def run() -> Dict:
     """Run full Phase 2 benchmark."""
     results = []
-    for entry in FAITHFULNESS_DATASET:
+    total = len(FAITHFULNESS_DATASET)
+    for i, entry in enumerate(FAITHFULNESS_DATASET, 1):
+        print(f"  [{i}/{total}] Evaluating {entry['id']}: {entry['query'][:50]}...",
+              flush=True)
         r = evaluate_single(entry)
+        status = "LLM" if r.llm_available else "heuristic"
+        print(f"           grounding={r.grounding_score:.0%} "
+              f"hallucination={r.hallucination_rate:.0%} "
+              f"({status}, {r.latency_ms:.0f}ms)", flush=True)
         results.append(r)
 
     n = len(results)

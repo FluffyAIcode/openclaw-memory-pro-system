@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _XAI_URL = "https://api.x.ai/v1/chat/completions"
 _OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-r1"
+_OPENROUTER_FAST_MODEL = "deepseek/deepseek-chat"
 _XAI_DEFAULT_MODEL = "grok-4"
+
+FAST_MODEL = _OPENROUTER_FAST_MODEL
 
 _AUTH_PROFILES_PATH = (
     Path.home() / ".openclaw" / "agents" / "main" / "agent" / "auth-profiles.json"
@@ -93,6 +96,7 @@ def generate(
     max_tokens: int = 2048,
     model: str = "",
     temperature: float = 0.7,
+    timeout: int = 120,
 ) -> Optional[str]:
     """Call the configured LLM provider and return generated text.
 
@@ -128,13 +132,14 @@ def generate(
                 "temperature": temperature,
             },
             headers=headers,
-            timeout=120,
+            timeout=timeout,
         )
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
     except requests.exceptions.Timeout:
-        logger.error("LLM API call timed out (%s)", api_url)
+        logger.error("LLM API call timed out after %ds (%s, model=%s)",
+                      timeout, api_url, model)
         return None
     except requests.exceptions.RequestException as e:
         logger.error("LLM API call failed (%s): %s", api_url, e)
