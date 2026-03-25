@@ -33,12 +33,12 @@ The subsystems (Memora, Chronos, MSA, Second Brain) were not originally designed
 | **Light structure & weaving** | **Partial** | KG + relation extraction (with `structural_gain` scoring), digests (with `compression_value` scoring), collision engine; adds edges and insights — not guaranteed holistic systemization. |
 | **Proactive nudges** | **Partial** | Scheduler + Telegram for briefing, collision, dormant check, contradiction scan, blindspot scan, skill proposals. Not fully task-grounded. |
 | **Systematic + professional depth** | **Not satisfied** | No automatic curriculum or domain mastery loop; depth comes from **how you use** recall + LLM, not from a finished "become expert" pipeline. |
-| **Actionable skills** | **Partially satisfied** | Skill Proposer auto-generates draft skills via 2-of-3 scoring rule. Skills have utility tracking, feedback loop, and low-utility auto-rewrite. Structured format (prerequisites, procedures, scenarios). Still lacks full executable skill workflows. |
+| **Actionable skills** | **Partially satisfied** | Skill Proposer auto-generates draft skills via 2-of-3 scoring rule. Skills have utility tracking, feedback loop, and low-utility auto-rewrite. Structured format (prerequisites, procedures, scenarios). v0.0.7: Skills now support `action_type` binding (`prompt_template`, `tool_call`, `webhook`) with auto-generated executable prompts. |
 | **True parametric continual learning** | **Not satisfied** | Chronos tracks importance and personality artifacts; **EWC/LoRA paths are largely simulated** — see [STUBS.md](STUBS.md). Nebius client is skeleton only. |
 | **Learning quality & intent** | **Partial** | Ingest tags (`thought`, `share`, `reference`, `to_verify`) supported; not yet used for differential processing. |
 | **Problem-triggered surfacing** | **Partially satisfied** | Assembled recall returns skills + KG relations + evidence as layered context; session-context includes active skills. No first-class "current task object" yet. |
 
-**Summary:** The system has progressed from **durable capture + retrieval** to a **closed-loop skill evolution pipeline**: fragments → KG/Digest/Collision processing → auto-proposed skills → assembled recall → usage feedback → skill refinement. The remaining gap is **true parametric learning** (Nebius fine-tuning) and **executable skill workflows**.
+**Summary:** The system has progressed from **durable capture + retrieval** to a **closed-loop skill evolution pipeline**: fragments → KG/Digest/Collision processing → auto-proposed skills → assembled recall → usage feedback → skill refinement. v0.0.7 adds executable skill bindings, token budget control, MemoryHub hooks, and attention-aware collision. The remaining gap is **true parametric learning** (Nebius fine-tuning).
 
 ## Architecture
 
@@ -77,10 +77,10 @@ Fragments → [Ingest + Tag] → Unified Corpus (Memora vectors + optional long-
 | Layer | Module | Role |
 |-------|--------|------|
 | **Unified Corpus** | **Memora** | Primary vector store (nomic-embed-text, JSONL). All content enters here. |
-| | **MSA** | Optional document-level storage for long text (>=100 words). Sparse routing + multi-hop interleave. Daily logs auto-synced. |
+| | **MSA** | Optional document-level storage for long text (>=100 words) or high importance (>=0.85). Sparse routing + LLM-powered multi-hop interleave. Daily logs auto-synced. |
 | **Intelligence** | **Second Brain** | KG weaving (`structural_gain`), distillation/summarization (`compression_value`), collision/association (`novelty`). Reads from Memora/MSA, writes to KG + insights + digests. |
 | | **Skill Proposer** | Auto-generates draft skills when 2-of-3 scores meet thresholds (KG >= 0.6, Digest >= 0.7, Collision >= 4). |
-| **Skill** | **Skill Registry** | Versioned, lifecycle-managed skills with utility tracking. Feedback loop triggers LLM rewrite on low utility. Structured format: prerequisites / procedures / scenarios. |
+| **Skill** | **Skill Registry** | Versioned, lifecycle-managed skills with utility tracking. Feedback loop triggers LLM rewrite on low utility. Structured format: prerequisites / procedures / scenarios. Supports `action_type` binding (prompt_template / tool_call / webhook) with auto-generated executable prompts. |
 | **Training** | **Chronos** | Training data export (distiller), replay buffer, personality profile generation, Nebius fine-tuning client (skeleton). |
 
 ### Second Brain (Intelligence Layer)
@@ -89,7 +89,7 @@ Second Brain is the cognitive engine — it sits **above** the storage layer and
 
 1. **Digest / Distillation** — Periodic LLM-powered summarization of daily memories into long-term digests. Each digest receives a `compression_value` score (0-1) measuring compression ratio, decision density, day coverage, and novelty.
 2. **KG Weaving** — LLM-based relation extraction into a Knowledge Graph (nodes: fact/decision/preference/goal/question; edges: supports/contradicts/extends/depends_on). Each extraction receives a `structural_gain` score (0-1) measuring integration, contradiction discovery, question addressing, and community bridging.
-3. **Collision Engine** — 7-strategy inspiration generation (5 RAG-based + 2 KG-driven), adaptive weights. MSA chunks participate as individual entries in the collision pool.
+3. **Collision Engine** — 7-strategy inspiration generation (5 RAG-based + 2 KG-driven), adaptive weights. Attention-aware anchor selection: extracts user's current focus topics from recent memories and biases collisions toward them with recency weighting. MSA chunks participate as individual entries in the collision pool.
 4. **Skill Proposer** — Scans recent KG/Digest/Collision scores; when >=2 of 3 meet thresholds, auto-proposes a draft skill with content extracted from mature KG nodes, digest summaries, and high-novelty insights.
 5. **Inference Engine** — Contradiction detection, absence reasoning, forward propagation, thread discovery.
 6. **Tracker** — Memory vitality scoring, dormancy detection, trend analysis.
@@ -132,10 +132,10 @@ Content is tagged at ingestion time to track cognitive intent:
 
 | Component | Role |
 |-----------|------|
-| **Memory Hub** | Unified router — auto-selects subsystems based on content length; three-layer assembled recall (skills -> KG -> evidence) |
+| **Memory Hub** | Unified router — auto-selects subsystems based on content length and importance (>=0.85 triggers Chronos + MSA); three-layer assembled recall with token budget control (skills -> KG -> evidence); extensible post-remember/post-recall hooks |
 | **Memory Server** | Persistent HTTP daemon — keeps embedding model loaded, exposes all operations as REST endpoints, async task queue, built-in scheduler + Telegram push |
 | **memory-cli** | Zero-dependency HTTP client — async polling with progress spinner for long-running tasks |
-| **LLM Client** | Unified xAI Grok API wrapper — used by digest, interleave, consolidation, collision, KG extraction, and skill rewrite |
+| **LLM Client** | Multi-provider LLM router (OpenRouter primary, xAI fallback) — used by digest, interleave, consolidation, collision, KG extraction, skill rewrite, and attention focus extraction |
 | **Shared Embedder** | Singleton `nomic-ai/nomic-embed-text-v1.5` instance shared across Memora, MSA, KG recall, and skill routing |
 
 ## How It Works
@@ -145,12 +145,13 @@ Content is tagged at ingestion time to track cognitive intent:
 ```
 Content arrives at hub.remember()
     |
-    +-- < 100 words  ------------------> Memora only
+    +-- < 100 words, importance < 0.85 -> Memora only
     +-- >= 100 words  -----------------> Memora + MSA
+    +-- importance >= 0.85  ------------> Memora + MSA + Chronos (auto-routed)
     |
     +-- Always writes to memory/YYYY-MM-DD.md (daily log)
-    +-- Async: Second Brain KG relation extraction (if importance >= 0.4)
-    +-- Chronos: only on explicit force_systems=["chronos"]
+    +-- Post-remember hooks: KG relation extraction, access tracking
+    +-- Chronos: also available via explicit force_systems=["chronos"]
 ```
 
 ### Query Routing (Assembled Recall)
@@ -160,10 +161,11 @@ Content arrives at hub.remember()
 ```
 query -> parallel search across:
     +-- 1. Skill Registry (vector similarity -> active skills)     score=1.0
+    |      includes executable_prompt when action_type=prompt_template
     +-- 2. Knowledge Graph (related nodes + logical edges)         score=0.9
     +-- 3. Evidence: Memora snippets + MSA documents               score=0.0-1.0
          |
-    Merged, sorted by score -> top_k results
+    Merged, sorted by score -> trimmed to token budget (default 4000) -> top_k results
 ```
 
 CLI output example:
@@ -244,6 +246,8 @@ Every 6 hours, the collision engine selects from **7 strategies** using adaptive
 6. **Contradiction-Based** — Uses KG contradiction edges to surface decisions at risk, ranked by evidence balance
 7. **Blind Spot-Based** — Uses KG absence reasoning to identify unexplored dimensions in important decisions
 
+**Attention Focus (v0.0.7):** Before each round, the engine extracts 3-5 focus keywords from the user's most recent memories (last 3 days). Anchor selection uses recency-weighted + attention-boosted probability — memories matching current focus topics are selected ~70x more often than old unrelated ones. The focus keywords are also injected into the LLM collision prompt to guide relevant insight generation.
+
 Each collision is evaluated by an LLM that scores novelty (1-5). Users can rate insights (`memory-cli rate <id> <1-5>`), and the system automatically adjusts strategy selection weights.
 
 ### Feedback Loops
@@ -274,13 +278,20 @@ pip install -e ".[embeddings]"  # recommended: install real embedding model
 
 ### 2. Configure (Optional)
 
-Create `~/.openclaw/.env`:
+The LLM client auto-detects API keys in this order:
+1. `OPENROUTER_API_KEY` env var
+2. OpenClaw `auth-profiles.json` (openrouter:default)
+3. `XAI_API_KEY` env var
+4. OpenClaw `auth-profiles.json` (xai:default)
+5. `~/.openclaw/.env` file
 
+Or set manually:
 ```
-XAI_API_KEY=your-xai-api-key-here
+OPENROUTER_API_KEY=sk-or-v1-...    # preferred (routes to deepseek-r1 by default)
+XAI_API_KEY=xai-...                # fallback
 ```
 
-The xAI Grok API is used for memory summarization, inspiration collision, personality generation, and skill rewriting. **The system works without it** — advanced features gracefully degrade to local heuristics.
+The LLM API is used for memory summarization, MSA multi-hop reasoning, inspiration collision, attention focus extraction, personality generation, skill rewriting, and KG extraction. **The system works without it** — advanced features gracefully degrade to local heuristics.
 
 ### 3. Start the Server
 
@@ -350,7 +361,7 @@ msa/                         # Unified Corpus — long-document store (Memory Sp
     encoder.py               # Document chunking + routing key generation
     memory_bank.py           # Tiered storage (RAM keys, disk content)
     router.py                # Batch cosine similarity top-k selection
-    interleave.py            # Multi-hop retrieval-generation loops
+    interleave.py            # Multi-hop retrieval-generation loops (LLM-powered sufficiency + reformulation)
     bridge.py                # Integration with cross-indexing to Memora
 second_brain/                # Intelligence Layer — KG / Digest / Collision / Skill Proposal
     digest.py                # LLM summarization + compression_value scoring
@@ -375,10 +386,10 @@ chronos/                     # Training Layer — Nebius fine-tuning pipeline
 memory_server.py             # HTTP daemon + scheduler + Telegram push + async queue
 memory_hub.py                # Unified ingestion/query router + three-layer assembled recall
 memory_cli.py                # Thin HTTP client with async polling
-llm_client.py                # xAI Grok API wrapper
+llm_client.py                # Multi-provider LLM router (OpenRouter / xAI)
 shared_embedder.py           # Singleton embedding model
 setup.py                     # Package configuration
-tests/                       # 523 unit tests across 16 files
+tests/                       # 540+ unit tests across 17 files
     test_memora.py
     test_chronos.py
     test_msa.py
@@ -391,6 +402,7 @@ tests/                       # 523 unit tests across 16 files
     test_strategy_weights.py
     test_memory_server.py
     test_memory_hub.py       # Three-layer recall, KG recall, skill recall tests
+    test_doc_consistency.py  # Guards against doc/code drift
     test_cli_coverage.py
     ...
 skills/                      # OpenClaw skill manifests
@@ -409,7 +421,7 @@ python3 -m pytest tests/ -q
 python3 -m pytest tests/ --cov=memora --cov=chronos --cov=msa --cov=second_brain --cov=skill_registry --cov=memory_server --cov=memory_hub -q
 ```
 
-523 tests across 16 files, covering all subsystems (Memora, MSA, Second Brain KG/inference/skill proposer, Chronos training pipeline, Skill Registry with utility tracking), the server, the hub, and the CLI layer.
+540+ tests across 17 files, covering all subsystems (Memora, MSA, Second Brain KG/inference/skill proposer, Chronos training pipeline, Skill Registry with utility tracking), the server, the hub, and the CLI layer.
 
 ## Embedding Model
 
@@ -428,7 +440,7 @@ See [STUBS.md](STUBS.md) for a full catalog of stubbed/simulated components. Key
 
 - **Chronos Nebius Client**: Skeleton only — `upload_dataset`, `create_job`, `poll_job` raise `NotImplementedError`. See [NEBIUS_FINETUNE_INTEGRATION_SKETCH.md](docs/NEBIUS_FINETUNE_INTEGRATION_SKETCH.md) for the integration plan.
 - **Chronos EWC/LoRA**: `ewc.py` and `dynamic_lora.py` still exist on disk but are **no longer imported** by any production code (deprecated since v0.0.3-beta).
-- **Skill Registry**: Auto-proposal pipeline works, but skills are **knowledge-type** (text content), not **executable workflows** (code + prompts + tests) as in [Memento-Skills](https://arxiv.org/abs/2603.18743). Behaviour-aligned router training requires more usage data accumulation.
+- **Skill Registry**: Auto-proposal pipeline works. v0.0.7 adds `action_type` binding (`prompt_template` / `tool_call` / `webhook`) with auto-generated executable prompts. Full executable workflows (code generation + test scaffolding) as in [Memento-Skills](https://arxiv.org/abs/2603.18743) are not yet implemented. Behaviour-aligned router training requires more usage data accumulation.
 - **Daemon + MPS**: The daemon process forces CPU mode because macOS Metal services are unavailable after `setsid()`. Foreground mode uses MPS (Apple GPU) normally.
 
 ## License
