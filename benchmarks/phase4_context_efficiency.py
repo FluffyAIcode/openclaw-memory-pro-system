@@ -21,17 +21,16 @@ logger = logging.getLogger(__name__)
 SERVER = "http://127.0.0.1:18790"
 
 
-def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: ~0.75 tokens per word for English, ~1.5 for Chinese."""
-    if not text:
-        return 0
-    ascii_chars = sum(1 for c in text if ord(c) < 128)
-    ratio = ascii_chars / max(len(text), 1)
-    words = len(text.split())
-    if ratio > 0.8:
-        return int(words * 1.3)
-    else:
-        return int(len(text) * 0.6)
+try:
+    from context_composer import estimate_tokens as _estimate_tokens
+except ImportError:
+    def _estimate_tokens(text: str) -> int:
+        """Fallback token estimate when context_composer is unavailable."""
+        if not text:
+            return 0
+        cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
+        latin = len(text) - cjk
+        return int(cjk * 1.5 + latin / 3.0)
 
 
 def _api_get(path: str, timeout: float = 10):

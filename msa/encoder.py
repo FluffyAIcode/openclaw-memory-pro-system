@@ -53,7 +53,12 @@ class MockEmbedder:
 
 
 class SentenceTransformerEmbedder:
-    """Real embedder using sentence-transformers. Lazy-loaded."""
+    """Real embedder using sentence-transformers. Lazy-loaded.
+
+    nomic-embed-text requires task prefixes for best quality:
+      - "search_document: " for stored content
+      - "search_query: "    for search queries
+    """
 
     def __init__(self, model_name: str, dimension: int):
         self.model_name = model_name
@@ -66,13 +71,21 @@ class SentenceTransformerEmbedder:
             self._model = SentenceTransformer(self.model_name, trust_remote_code=True)
             logger.info("Loaded SentenceTransformer: %s", self.model_name)
 
-    def embed(self, text: str) -> np.ndarray:
+    def embed(self, text: str, prefix: str = "search_document") -> np.ndarray:
         self._load()
-        return self._model.encode(text, normalize_embeddings=True).astype(np.float32)
+        prefixed = f"{prefix}: {text}"
+        return self._model.encode(prefixed, normalize_embeddings=True).astype(np.float32)
 
-    def embed_batch(self, texts: List[str]) -> np.ndarray:
+    def embed_document(self, text: str) -> np.ndarray:
+        return self.embed(text, prefix="search_document")
+
+    def embed_query(self, text: str) -> np.ndarray:
+        return self.embed(text, prefix="search_query")
+
+    def embed_batch(self, texts: List[str], prefix: str = "search_document") -> np.ndarray:
         self._load()
-        return self._model.encode(texts, normalize_embeddings=True).astype(np.float32)
+        prefixed = [f"{prefix}: {t}" for t in texts]
+        return self._model.encode(prefixed, normalize_embeddings=True).astype(np.float32)
 
 
 def _create_embedder(config):
@@ -143,4 +156,5 @@ class ChunkEncoder:
         )
 
     def encode_query(self, query: str) -> np.ndarray:
-        return self.embedder.embed(query)
+        embed_q = self.embedder.embed_query if hasattr(self.embedder, 'embed_query') else self.embedder.embed
+        return embed_q(query)

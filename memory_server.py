@@ -87,19 +87,31 @@ def _load_shared_embedder():
         logger.info("Model loaded successfully")
 
         class SharedSentenceEmbedder:
-            """Wraps SentenceTransformer with the embed/embed_batch interface."""
+            """Wraps SentenceTransformer with task-prefixed embed interface.
+
+            nomic-embed-text-v1.5 requires task prefixes for best retrieval quality:
+              - "search_document: " for stored content
+              - "search_query: "    for search queries
+            """
             def __init__(self, m, dim=768):
                 self._model = m
                 self.dimension = dim
 
             def embed(self, text: str):
-                return self._model.encode(text, normalize_embeddings=True).tolist()
+                return self._model.encode(f"search_document: {text}", normalize_embeddings=True).tolist()
+
+            def embed_document(self, text: str):
+                return self._model.encode(f"search_document: {text}", normalize_embeddings=True).tolist()
+
+            def embed_query(self, text: str):
+                return self._model.encode(f"search_query: {text}", normalize_embeddings=True).tolist()
 
             def embed_batch(self, texts):
-                return self._model.encode(texts, normalize_embeddings=True).astype(np.float32)
+                prefixed = [f"search_document: {t}" for t in texts]
+                return self._model.encode(prefixed, normalize_embeddings=True).astype(np.float32)
 
             def embed_np(self, text: str):
-                return self._model.encode(text, normalize_embeddings=True).astype(np.float32)
+                return self._model.encode(f"search_document: {text}", normalize_embeddings=True).astype(np.float32)
 
         emb = SharedSentenceEmbedder(model)
         shared_embedder.set(emb)
@@ -873,6 +885,8 @@ def _execute_endpoint(path: str, body: dict) -> dict:
         return hub.recall(
             query=body.get("query", ""),
             top_k=body.get("top_k", 8),
+            max_tokens=body.get("max_tokens", 4000),
+            min_score=body.get("min_score", 0.45),
         )
 
     elif path == "/deep-recall":
@@ -886,6 +900,7 @@ def _execute_endpoint(path: str, body: dict) -> dict:
         results = vector_store.search(
             query=body.get("query", ""),
             limit=body.get("limit", 8),
+            min_score=body.get("min_score", 0.0),
         )
         _track_access_async(results, body.get("query", ""))
         return {"results": results}
@@ -1112,14 +1127,23 @@ def _get_session_context() -> dict:
     try:
         from second_brain.tracker import tracker as sb_tracker
         trends = sb_tracker.find_trends()
-        result["recent_focus"] = [
-            f"{t.get('queries', ['?'])[0]} ({t['hits']}次)" for t in trends[:5]
-        ]
+        focus_items = []
+        seen_labels: set = set()
+        for t in trends[:15]:
+            queries = t.get("queries", [])
+            label = next((q for q in queries if len(q) < 80 and "\n" not in q), None)
+            if label and label not in seen_labels:
+                seen_labels.add(label)
+                focus_items.append(f"{label} ({t['hits']}次)")
+            if len(focus_items) >= 5:
+                break
+        result["recent_focus"] = focus_items
     except Exception:
         result["recent_focus"] = []
 
     result["pending_contradictions"] = []
 
+    _PERSONALITY_SKIP_KEYS = {"knowledge_anchors"}
     personality_path = _WORKSPACE / "PERSONALITY.yaml"
     if personality_path.exists():
         try:
@@ -1128,10 +1152,14 @@ def _get_session_context() -> dict:
             if isinstance(pdata, dict):
                 traits = []
                 for k, v in pdata.items():
+                    if k in _PERSONALITY_SKIP_KEYS:
+                        continue
                     if isinstance(v, str) and len(v) < 100:
                         traits.append(f"{k}: {v}")
                     elif isinstance(v, list):
-                        traits.append(f"{k}: {', '.join(str(x) for x in v[:3])}")
+                        items = [str(x) for x in v[:3] if isinstance(x, str) and len(x) < 80]
+                        if items:
+                            traits.append(f"{k}: {', '.join(items)}")
                 result["personality_traits"] = "; ".join(traits[:6])
             else:
                 result["personality_traits"] = ""
@@ -1590,6 +1618,14 @@ def main():
 
     logger.info("Loading shared embedder...")
     _load_shared_embedder()
+
+    try:
+        from second_brain.knowledge_graph import kg
+        count = kg.backfill_embeddings()
+        if count:
+            logger.info("Backfilled %d KG node embeddings on startup", count)
+    except Exception as e:
+        logger.warning("KG embedding backfill skipped: %s", e)
 
     ingestor = AutoIngestor()
     ingestor.start()

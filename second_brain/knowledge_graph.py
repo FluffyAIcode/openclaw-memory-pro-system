@@ -49,14 +49,14 @@ class KGEdgeType(str, Enum):
 class KGNode:
     __slots__ = ("id", "content", "node_type", "importance", "created_at",
                  "updated_at", "access_count", "confidence", "maturity",
-                 "source_hashes", "sentiment")
+                 "source_hashes", "sentiment", "embedding")
 
     def __init__(self, content: str, node_type: KGNodeType,
                  importance: float = 0.5, confidence: float = 0.8,
                  node_id: str = "", created_at: str = "",
                  updated_at: str = "", access_count: int = 0,
                  maturity: float = 0.0, source_hashes: list = None,
-                 sentiment: str = ""):
+                 sentiment: str = "", embedding: list = None):
         self.id = node_id or uuid.uuid4().hex[:12]
         self.content = content
         self.node_type = KGNodeType(node_type)
@@ -68,6 +68,7 @@ class KGNode:
         self.maturity = maturity
         self.source_hashes = source_hashes or []
         self.sentiment = sentiment
+        self.embedding = embedding
 
     def to_dict(self) -> dict:
         d = {
@@ -84,6 +85,8 @@ class KGNode:
         }
         if self.sentiment:
             d["sentiment"] = self.sentiment
+        if self.embedding is not None:
+            d["embedding"] = self.embedding
         return d
 
     @classmethod
@@ -100,6 +103,7 @@ class KGNode:
             maturity=d.get("maturity", 0.0),
             source_hashes=d.get("source_hashes", []),
             sentiment=d.get("sentiment", ""),
+            embedding=d.get("embedding"),
         )
 
     def update_maturity(self):
@@ -176,8 +180,52 @@ class KnowledgeGraph:
 
     # ── Node Operations ──────────────────────────────────────────
 
+    def _get_embedder(self):
+        try:
+            import shared_embedder
+            emb = shared_embedder.get()
+            if emb is not None:
+                return emb
+        except ImportError:
+            pass
+        try:
+            from memora.embedder import embedder
+            return embedder
+        except ImportError:
+            return None
+
+    def embed_node(self, node: KGNode) -> bool:
+        """Compute and cache embedding for a node. Returns True on success."""
+        if node.embedding is not None:
+            return True
+        emb = self._get_embedder()
+        if emb is None:
+            return False
+        try:
+            embed_fn = emb.embed_document if hasattr(emb, 'embed_document') else emb.embed
+            vec = embed_fn(node.content)
+            node.embedding = vec if isinstance(vec, list) else vec.tolist()
+            return True
+        except Exception as e:
+            logger.warning("Failed to embed KG node %s: %s", node.id, e)
+            return False
+
+    def backfill_embeddings(self) -> int:
+        """Compute embeddings for all nodes missing them. Returns count updated."""
+        self._ensure_loaded()
+        count = 0
+        for node in self._nodes.values():
+            if node.embedding is None:
+                if self.embed_node(node):
+                    count += 1
+        if count > 0:
+            self.save()
+            logger.info("KG: backfilled embeddings for %d nodes", count)
+        return count
+
     def add_node(self, node: KGNode) -> str:
         self._ensure_loaded()
+        self.embed_node(node)
         self._nodes[node.id] = node
         self._graph.add_node(node.id)
         self._append_node(node)

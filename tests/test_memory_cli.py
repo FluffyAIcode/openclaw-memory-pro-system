@@ -78,17 +78,18 @@ class TestCommands:
 
     def test_cmd_recall(self, capsys):
         args = MagicMock(query="test", top_k=5)
-        with _mock_urlopen({"merged": [
-            {"score": 0.9, "content": "result", "system": "memora", "metadata": {}}
-        ]}):
+        with _mock_urlopen({
+            "skills": [],
+            "kg_relations": [{"description": "fact → supports → decision", "is_critical": False}],
+            "evidence": [{"score": 0.9, "content": "result memory", "timestamp": "2026-03-26"}],
+        }):
             memory_cli.cmd_recall(args)
         out = capsys.readouterr().out
-        assert "90%" in out
-        assert "result" in out
+        assert "result memory" in out
 
     def test_cmd_recall_empty(self, capsys):
         args = MagicMock(query="test", top_k=5)
-        with _mock_urlopen({"merged": []}):
+        with _mock_urlopen({"skills": [], "kg_relations": [], "evidence": []}):
             memory_cli.cmd_recall(args)
         out = capsys.readouterr().out
         assert "没有找到" in out

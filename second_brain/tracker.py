@@ -3,6 +3,7 @@
 import json
 import logging
 import math
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -66,6 +67,8 @@ class MemoryTracker:
 
     def track(self, memory_id: str, content_hash: str, query: str = ""):
         """Record an access event for a memory entry."""
+        if query and self._NOISE_PATTERNS.search(query):
+            return
         record = AccessRecord(
             memory_id=memory_id,
             content_hash=content_hash,
@@ -161,8 +164,21 @@ class MemoryTracker:
         dormant.sort(key=lambda x: x.get("importance", 0), reverse=True)
         return dormant
 
+    _NOISE_PATTERNS = re.compile(
+        r'(HEARTBEAT|heartbeat_ok|Read HEARTBEAT\.md|'
+        r'Conversation info \(untrusted|Sender \(untrusted|'
+        r'sender_id|message_id.*sender.*timestamp|'
+        r'untrusted metadata|'
+        r'quantum|量子|qubit)',
+        re.IGNORECASE
+    )
+
     def find_trends(self) -> List[dict]:
-        """Find memories most frequently accessed in the recent window."""
+        """Find memories most frequently accessed in the recent window.
+
+        Filters out system noise: heartbeat queries, Telegram metadata,
+        benchmark test queries, and other non-user content.
+        """
         records = self._load()
         cutoff = datetime.now() - timedelta(days=config.trend_window_days)
 
@@ -173,6 +189,9 @@ class MemoryTracker:
             except (ValueError, TypeError):
                 continue
             if ts < cutoff:
+                continue
+
+            if r.query and self._NOISE_PATTERNS.search(r.query):
                 continue
 
             key = r.content_hash or r.memory_id

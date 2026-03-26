@@ -1,0 +1,196 @@
+{
+  "timestamp": "2026-03-24T11:44:00.374048",
+  "server": {
+    "status": "ok",
+    "uptime_seconds": 83165,
+    "embedder": "SentenceTransformer",
+    "pid": 35439
+  },
+  "phase_2": {
+    "phase": "2_faithfulness",
+    "dataset_size": 5,
+    "llm_available": 5,
+    "summary": {
+      "avg_grounding_score": 0.7846,
+      "avg_hallucination_rate": 0.2154,
+      "avg_trap_avoidance_rate": 1.0,
+      "total_claims_verified": 30,
+      "total_supported": 27,
+      "total_traps_triggered": 0,
+      "total_traps_checked": 16
+    },
+    "details": [
+      {
+        "id": "F01",
+        "query": "What storage backend does our memory system use?",
+        "grounding_score": 1.0,
+        "hallucination_rate": 0.0,
+        "trap_avoidance": 1.0,
+        "claims": "1S/0U/0C",
+        "traps": "0/4 triggered",
+        "latency_ms": 47871.6,
+        "llm_available": true
+      },
+      {
+        "id": "F02",
+        "query": "How does the inspiration collision engine work?",
+        "grounding_score": 1.0,
+        "hallucination_rate": 0.0,
+        "trap_avoidance": 1.0,
+        "claims": "10S/0U/0C",
+        "traps": "0/3 triggered",
+        "latency_ms": 65311.8,
+        "llm_available": true
+      },
+      {
+        "id": "F03",
+        "query": "What is our approach to continual learning?",
+        "grounding_score": 1.0,
+        "hallucination_rate": 0.0,
+        "trap_avoidance": 1.0,
+        "claims": "4S/0U/0C",
+        "traps": "0/3 triggered",
+        "latency_ms": 41791.9,
+        "llm_available": true
+      },
+      {
+        "id": "F04",
+        "query": "What quantum computing concepts are in our knowledge base?",
+        "grounding_score": 0.923,
+        "hallucination_rate": 0.077,
+        "trap_avoidance": 1.0,
+        "claims": "12S/1U/0C",
+        "traps": "0/3 triggered",
+        "latency_ms": 72358.7,
+        "llm_available": true
+      },
+      {
+        "id": "F05",
+        "query": "How does the skill evolution pipeline work?",
+        "grounding_score": 0.0,
+        "hallucination_rate": 1.0,
+        "trap_avoidance": 1.0,
+        "claims": "0S/2U/0C",
+        "traps": "0/3 triggered",
+        "latency_ms": 59503.7,
+        "llm_available": true
+      }
+    ]
+  },
+  "phase_3": {
+    "phase": "3_ab_test",
+    "dataset_size": 5,
+    "summary": {
+      "wins_no_memory": 1,
+      "wins_with_memory": 4,
+      "ties": 0,
+      "avg_score_no_memory": 3.866,
+      "avg_score_with_memory": 4.4,
+      "memory_delta": 0.534,
+      "memory_win_rate": 0.8
+    },
+    "details": [
+      {
+        "id": "AB01",
+        "query": "What technical decisions have we made about our architecture?",
+        "winner": "B",
+        "avg_no_memory": 2.33,
+        "avg_with_memory": 5.0,
+        "delta": 2.67,
+        "scores_a": {
+          "specificity": 1,
+          "accuracy": 5,
+          "personalization": 1
+        },
+        "scores_b": {
+          "specificity": 5,
+          "accuracy": 5,
+          "personalization": 5
+        },
+        "reasoning": "Answer B is highly specific, accurate, and personalized using memory context, while A lacks details and personalization.",
+        "llm_judge": true
+      },
+      {
+        "id": "AB02",
+        "query": "Summarize what I know about quantum computing.",
+        "winner": "B",
+        "avg_no_memory": 4.67,
+        "avg_with_memory": 5.0,
+        "delta": 0.33,
+        "scores_a": {
+          "completeness": 4,
+          "accuracy": 5,
+          "no_hallucination": 5
+        },
+        "scores_b": {
+          "completeness": 5,
+          "accuracy": 5,
+          "no_hallucination": 5
+        },
+        "reasoning": "Answer B is more complete by incorporating the user's memory context on error correction, while maintaining accuracy and avoiding hallucinations; Answer A lacks this personalization.",
+        "llm_judge": true
+      },
+      {
+        "id": "AB03",
+        "query": "What engineering lessons have we learned?",
+        "winner": "B",
+        "avg_no_memory": 4.0,
+        "avg_with_memory": 4.67,
+        "delta": 0.67,
+        "scores_a": {
+          "specificity": 4,
+          "actionability": 4,
+          "grounding": 4
+        },
+        "scores_b": {
+          "specificity": 5,
+          "actionability": 4,
+          "grounding": 5
+        },
+        "reasoning": "Answer B is more specific and better grounded in the provided memory context, making it more tailored and relevant.",
+        "llm_judge": true
+      },
+      {
+        "id": "AB04",
+        "query": "What are the main components of the memory system?",
+        "winner": "A",
+        "avg_no_memory": 5.0,
+        "avg_with_memory": 3.0,
+        "delta": -2.0,
+        "scores_a": {
+          "completeness": 5,
+          "accuracy": 5,
+          "structure": 5
+        },
+        "scores_b": {
+          "completeness": 2,
+          "accuracy": 4,
+          "structure": 3
+        },
+        "reasoning": "Answer A fully and accurately addresses common interpretations of the question with excellent structure. Answer B assumes a specific context not in the question, is truncated, and thus lacks completen",
+        "llm_judge": true
+      },
+      {
+        "id": "AB05",
+        "query": "How should I handle slow API calls in a Python HTTP server?",
+        "winner": "B",
+        "avg_no_memory": 3.33,
+        "avg_with_memory": 4.33,
+        "delta": 1.0,
+        "scores_a": {
+          "specificity": 3,
+          "actionability": 3,
+          "grounding": 4
+        },
+        "scores_b": {
+          "specificity": 4,
+          "actionability": 4,
+          "grounding": 5
+        },
+        "reasoning": "B is more specific to the context, provides actionable code, and is well-grounded in provided memory, despite being incomplete; A is more general.",
+        "llm_judge": true
+      }
+    ]
+  },
+  "total_elapsed_seconds": 572.6
+}

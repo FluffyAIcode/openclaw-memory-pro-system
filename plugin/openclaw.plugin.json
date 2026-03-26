@@ -1,0 +1,52 @@
+{
+  "id": "memory-pro",
+  "name": "Memory Pro System",
+  "version": "0.0.7",
+  "description": "Enhanced AI memory — vector store, document-level MSA, KG, collision engine, executable skills, and closed-loop skill evolution.",
+  "entry": "index.ts",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "pythonPath": {
+        "type": "string",
+        "default": "python3",
+        "description": "Path to the Python 3 interpreter."
+      },
+      "memoryServerPort": {
+        "type": "number",
+        "default": 18790,
+        "description": "Port the memory server listens on."
+      },
+      "workspacePath": {
+        "type": "string",
+        "default": "",
+        "description": "Path to the memory-pro workspace. Leave empty to auto-detect from OpenClaw workspace."
+      },
+      "autoStart": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically start the memory server when the gateway loads."
+      },
+      "contextInjection": {
+        "type": "boolean",
+        "default": true,
+        "description": "Inject recalled memory into agent prompts via before_prompt_build hook."
+      },
+      "contextMaxTokens": {
+        "type": "number",
+        "default": 4000,
+        "description": "Max tokens for memory context injected into prompts."
+      }
+    },
+    "required": []
+  },
+  "permissions": [
+    "agent.tools",
+    "agent.context",
+    "http.routes",
+    "service.background"
+  ],
+  "skills": [
+    "skills/openclaw-memory-pro/SKILL.md"
+  ]
+}

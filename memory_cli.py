@@ -590,9 +590,12 @@ def cmd_session_context(args):
     if threads:
         print("🧵 活跃思维线索:")
         for t in threads:
-            status_icon = {"exploring": "🔎", "decided": "✅", "nascent": "🌱"}.get(
-                t.get("status", ""), "📌")
-            print(f"   {status_icon} {t.get('title', '?')} ({t.get('node_count', 0)} 节点)")
+            status_icon = {"exploring": "🔎", "decided": "✅", "nascent": "🌱",
+                           "goal": "🎯", "question": "❓", "decision": "✅"}.get(
+                t.get("status", t.get("type", "")), "📌")
+            title = t.get("title") or t.get("type", "?")
+            count = t.get("node_count", t.get("count", 0))
+            print(f"   {status_icon} {title} ({count} 节点)")
         print()
 
     focus = result.get("recent_focus", [])

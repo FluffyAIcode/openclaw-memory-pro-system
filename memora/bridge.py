@@ -54,9 +54,11 @@ class MemoraBridge:
         logger.info("Memora save complete → vectorstore + Chronos + MSA")
         return entry
 
-    def search_across(self, query: str, include_msa: bool = True):
+    def search_across(self, query: str, include_msa: bool = True,
+                      min_score: float = 0.0):
         """跨系统搜索：Memora 向量检索 + MSA 文档级路由"""
-        memora_results = vector_store.search(query, limit=8)
+        memora_results = vector_store.search(query, limit=8,
+                                             min_score=min_score)
 
         if include_msa:
             try:

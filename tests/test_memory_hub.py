@@ -158,14 +158,15 @@ class TestMemoryHub:
     def test_recall(self, tmp_path):
         hub = self._make_hub(tmp_path)
         hub._memora_bridge.search_across.return_value = [
-            {"content": "x", "score": 0.8}
+            {"content": "memory recall query result alpha", "score": 0.8}
         ]
         hub._msa_bridge.query_memory.return_value = {
-            "results": [{"chunks": ["c1"], "score": 0.7, "doc_id": "d1", "title": "T"}]
+            "results": [{"chunks": ["memory recall query chunk"],
+                         "score": 0.7, "doc_id": "d1", "title": "T"}]
         }
         with patch("memory_hub.MemoryHub._recall_skills", return_value=[]), \
              patch("memory_hub.MemoryHub._recall_kg", return_value=[]):
-            result = hub.recall("query")
+            result = hub.recall("memory recall query")
         assert len(result["merged"]) == 2
         assert result["merged"][0]["score"] >= result["merged"][1]["score"]
         assert "skills" in result
@@ -232,36 +233,41 @@ class TestMemoryHub:
         assert result["merged"][0]["system"] == "kg"
 
     def test_recall_assembled_ordering(self, tmp_path):
-        """Skills > KG > evidence in merged output."""
+        """Layered ordering: L1 Core (skills + evidence) → L2 Concept (KG) → L3 Background."""
         hub = self._make_hub(tmp_path)
         hub._memora_bridge.search_across.return_value = [
-            {"content": "raw snippet", "score": 0.6}
+            {"content": "memory system architecture design", "score": 0.6}
         ]
         hub._msa_bridge.query_memory.return_value = {"results": []}
         mock_skill = MagicMock()
-        mock_skill.name = "Skill A"
-        mock_skill.content = "skill content matching query"
-        mock_skill.tags = ["test"]
+        mock_skill.name = "Memory Architecture"
+        mock_skill.content = "memory system architecture design skill"
+        mock_skill.tags = ["memory"]
         mock_skill.to_dict.return_value = {
-            "id": "s1", "name": "Skill A",
-            "content": "skill content matching query",
-            "status": "active", "tags": ["test"],
+            "id": "s1", "name": "Memory Architecture",
+            "content": "memory system architecture design skill",
+            "status": "active", "tags": ["memory"],
         }
         mock_registry = MagicMock()
         mock_registry.list_active.return_value = [mock_skill]
         mock_kg = [{
-            "description": "A -[supports]→ B",
+            "description": "memory system architecture supports vector storage",
             "edge_type": "supports",
-            "source_content": "A", "target_content": "B",
-            "weight": 0.7, "is_critical": False, "metadata": {},
+            "source_content": "memory system", "target_content": "architecture",
+            "weight": 0.7, "relevance": 0.7, "is_critical": False, "metadata": {},
         }]
         with patch.dict(sys.modules, {"skill_registry": MagicMock(registry=mock_registry)}), \
              patch("memory_hub.MemoryHub._recall_kg", return_value=mock_kg):
-            result = hub.recall("query")
+            result = hub.recall("memory system architecture")
         merged = result["merged"]
         assert merged[0]["system"] == "skill"
-        assert merged[1]["system"] == "kg"
-        assert merged[2]["system"] == "memora"
+        systems = [m["system"] for m in merged]
+        assert "memora" in systems, "evidence should appear in merged output"
+        layers = [m.get("layer") for m in merged]
+        core_end = max(i for i, l in enumerate(layers) if l == "core") if "core" in layers else -1
+        concept_start = min((i for i, l in enumerate(layers) if l == "concept"), default=len(merged))
+        assert core_end < concept_start or concept_start == len(merged), \
+            "L1 Core items should precede L2 Concept items"
 
     def test_recall_skills_exception(self, tmp_path):
         hub = self._make_hub(tmp_path)

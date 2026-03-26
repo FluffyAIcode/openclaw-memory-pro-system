@@ -1,17 +1,25 @@
 """
 Memory Hub — Unified interface for OpenClaw's memory architecture.
 
-Refactored architecture:
+Storage systems:
   - Memora   (primary storage: vector RAG, snippet-level search)
   - MSA      (optional long-document storage + multi-hop reasoning)
   - Chronos  (training buffer — not on default ingest path)
   - Second Brain  (intelligence layer: KG, digest, collision — not a storage system)
   - Skill Registry (distilled actionable knowledge — participates in recall)
 
-Recall pipeline (question-driven, assembled):
-  1. Skill layer:  match active skills by keyword → highest priority
-  2. KG layer:     find related nodes + logical relationships
-  3. Evidence layer: Memora snippets + MSA documents → raw supporting material
+Recall pipeline (Context Composer architecture):
+  1. Raw retrieval   — skills, KG, Memora, MSA (parallel)
+  2. Reranking       — cross-encoder on evidence candidates
+  3. Conflict scan   — real-time contradiction detection via KG + inference engine
+  4. Composition     — 4-layer assembly via context_composer.py:
+       L1 Core Facts     — skills + highest-relevance evidence
+       L2 Concept Links  — KG relations + conceptual associations
+       L3 Background     — long-term summaries, lower-rank evidence
+       L4 Conflicts      — contradictions + warnings (always surfaced)
+
+  Strategy router classifies query intent (factual/thinking/planning/review)
+  and adjusts per-layer token budget allocation accordingly.
 
 Ingest tags (intent):
   - thought:    user's own thinking / analysis
@@ -43,8 +51,11 @@ class MemoryHub:
       - High importance (≥0.85) → also Chronos (structured deep encoding)
       - Always writes daily file
 
-    Query routing:
-      - recall → three-layer assembled (skills → KG → evidence)
+    Query routing (recall):
+      - Skills recall (active skill registry, vector + keyword)
+      - KG recall (Second Brain knowledge graph, semantic similarity)
+      - Evidence recall (Memora + MSA, reranked via cross-encoder)
+      → Context Composer (4-layer assembly with strategy routing)
       - deep-recall → MSA multi-hop + Memora context + skills
     """
 
@@ -176,15 +187,19 @@ class MemoryHub:
         return results
 
     def recall(self, query: str, top_k: int = 8,
-               max_tokens: int = 4000) -> Dict:
-        """Question-driven assembled recall with token budget.
+               max_tokens: int = 4000,
+               min_score: float = 0.45) -> Dict:
+        """Context-composed recall with 4-layer assembly pipeline.
 
-        Three-layer response:
-          1. skills:   matching active skills (highest priority)
-          2. kg:       related knowledge nodes + logical relationships
-          3. evidence: Memora snippets + MSA documents (raw material)
+        Pipeline:
+          1. Raw retrieval  — skills, KG, Memora, MSA (parallel)
+          2. Reranking      — cross-encoder on evidence
+          3. Conflict scan  — find contradictions among recalled KG nodes
+          4. Composition    — Context Composer (strategy router → layered
+                             assembly → quality gate → budget controller)
 
-        max_tokens caps the total content size in merged results.
+        max_tokens caps the total content size in composed results.
+        min_score filters out low-relevance results at retrieval stage.
         """
         results = {
             "query": query,
@@ -193,15 +208,20 @@ class MemoryHub:
             "evidence": [],
             "memora": [],
             "msa": [],
+            "contradictions": [],
             "merged": [],
+            "intent": "",
+            "layers": {},
+            "budget_stats": {},
         }
 
+        # ── Raw retrieval ─────────────────────────────────────────
         results["skills"] = self._recall_skills(query)
-
-        results["kg_relations"] = self._recall_kg(query)
+        results["kg_relations"] = self._recall_kg(query, min_score=min_score)
 
         try:
-            memora_results = self.memora.search_across(query, include_msa=False)
+            memora_results = self.memora.search_across(
+                query, include_msa=False, min_score=min_score)
             for r in memora_results:
                 r["system"] = "memora"
             results["memora"] = memora_results
@@ -220,40 +240,48 @@ class MemoryHub:
         except Exception as e:
             logger.warning("MSA recall failed: %s", e)
 
+        # ── Rerank evidence ───────────────────────────────────────
         evidence = results["memora"] + results["msa"]
         evidence.sort(key=lambda x: x.get("score", 0), reverse=True)
-        results["evidence"] = evidence[:top_k]
+        results["evidence"] = self._rerank(query, evidence[:top_k * 2])[:top_k]
 
-        merged = []
-        for s in results["skills"]:
-            proc = s.get("procedures", "")[:150]
-            body = proc if proc else s["content"][:200]
-            merged.append({
-                "content": f"[Skill] {s['name']}: {body}",
-                "score": 1.0,
-                "system": "skill",
-                "metadata": {"skill_id": s["id"], "status": s["status"]},
-            })
+        # ── Conflict scan (Step 3: real-time contradiction detection) ──
+        results["contradictions"] = self._scan_recall_conflicts(
+            results["kg_relations"])
 
-        kg_sorted = sorted(results["kg_relations"],
-                           key=lambda x: x.get("relevance", 0), reverse=True)
-        for kg in kg_sorted[:3]:
-            desc = kg["description"][:150]
-            merged.append({
-                "content": f"[KG] {desc}",
-                "score": 0.9,
-                "system": "kg",
-                "metadata": kg.get("metadata", {}),
-            })
+        # ── Context Composition (Steps 1,2,4) ─────────────────────
+        try:
+            from context_composer import ContextComposer
+            composer = ContextComposer()
+            composed = composer.compose(query, results, max_tokens=max_tokens)
+            results["merged"] = composed["merged"]
+            results["intent"] = composed["intent"]
+            results["layers"] = composed["layers"]
+            results["budget_stats"] = composed["budget_stats"]
+            if composed.get("gate_stats"):
+                results["gate_stats"] = composed["gate_stats"]
+            if composed.get("warnings"):
+                results["composer_warnings"] = composed["warnings"]
+                for w in composed["warnings"]:
+                    logger.warning("Context Composer: %s", w)
+        except ImportError as e:
+            logger.error("Context Composer module not found: %s", e)
+            results["merged"] = self._fallback_merge(results, top_k, max_tokens)
+            results["composer_warnings"] = [f"MODULE_MISSING: {e}"]
+        except Exception as e:
+            logger.error("Context Composer failed: %s (type=%s)",
+                         e, type(e).__name__, exc_info=True)
+            results["merged"] = self._fallback_merge(results, top_k, max_tokens)
+            results["composer_warnings"] = [f"COMPOSER_ERROR: {type(e).__name__}: {e}"]
 
-        merged.extend(results["evidence"])
-        merged.sort(key=lambda x: x.get("score", 0), reverse=True)
-        results["merged"] = self._trim_to_budget(merged[:top_k], max_tokens)
-
-        logger.info("Recall: %d skills, %d kg, %d evidence, %d merged (budget %d) for '%s'",
-                     len(results["skills"]), len(results["kg_relations"]),
-                     len(results["evidence"]), len(results["merged"]),
-                     max_tokens, query[:60])
+        logger.info(
+            "Recall: intent=%s, skills=%d kg=%d evidence=%d conflicts=%d "
+            "merged=%d (budget %d) for '%s'",
+            results.get("intent", "?"),
+            len(results["skills"]), len(results["kg_relations"]),
+            len(results["evidence"]), len(results["contradictions"]),
+            len(results["merged"]), max_tokens, query[:60],
+        )
 
         for hook in self._post_recall_hooks:
             try:
@@ -285,12 +313,101 @@ class MemoryHub:
         return results
 
     @staticmethod
+    def _scan_recall_conflicts(kg_relations: list) -> list:
+        """Find contradictions among recalled KG relations + global scan.
+
+        Returns lightweight dicts suitable for the Context Composer's L4 layer.
+        """
+        conflicts = []
+
+        for rel in kg_relations:
+            if rel.get("edge_type") == "contradicts":
+                conflicts.append({
+                    "decision_content": rel.get("source_content", "")[:150],
+                    "contradicting": [{
+                        "content": rel.get("target_content", "")[:150],
+                        "weight": rel.get("weight", 0.5),
+                    }],
+                    "risk_score": rel.get("weight", 0.5),
+                    "source": "kg_edge",
+                })
+
+        try:
+            from second_brain.inference import inference_engine
+            reports = inference_engine.scan_contradictions()
+            for r in reports[:3]:
+                if r.risk_score < 0.3:
+                    continue
+                conflicts.append({
+                    "decision_content": r.decision.content[:150],
+                    "contradicting": r.contradicting[:2],
+                    "risk_score": r.risk_score,
+                    "source": "inference_engine",
+                })
+        except Exception:
+            pass
+
+        return conflicts
+
+    def _fallback_merge(self, results: dict, top_k: int,
+                        max_tokens: int) -> list:
+        """Fallback merge when Context Composer is unavailable."""
+        merged = []
+        for s in results.get("skills", []):
+            proc = s.get("procedures", "")[:150]
+            body = proc if proc else s.get("content", "")[:200]
+            merged.append({
+                "content": f"[Skill] {s.get('name', '?')}: {body}",
+                "score": 1.0, "system": "skill", "layer": "core",
+            })
+        for ev in results.get("evidence", [])[:top_k]:
+            merged.append({**ev, "layer": "core"})
+        merged.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return self._trim_to_budget(merged[:top_k], max_tokens)
+
+    @staticmethod
+    def _rerank(query: str, candidates: list) -> list:
+        """Stage 2: cross-encoder reranking over bi-encoder candidates.
+
+        Skills are excluded from reranking (always kept at top).
+        """
+        if len(candidates) <= 1:
+            return candidates
+
+        skills = [c for c in candidates if c.get("system") == "skill"]
+        non_skills = [c for c in candidates if c.get("system") != "skill"]
+
+        if not non_skills:
+            return candidates
+
+        try:
+            from reranker import rerank
+            reranked = rerank(query, non_skills, content_key="content")
+            for item in reranked:
+                ce_score = item.get("rerank_score")
+                if ce_score is not None:
+                    bi_score = item.get("score", 0)
+                    ce_norm = max(min((ce_score + 10) / 20, 1.0), 0.0)
+                    item["score"] = round(0.4 * bi_score + 0.6 * ce_norm, 4)
+            reranked.sort(key=lambda x: x.get("score", 0), reverse=True)
+        except Exception as e:
+            logger.debug("Reranker unavailable (%s), using bi-encoder order", e)
+            reranked = non_skills
+
+        return skills + reranked
+
+    @staticmethod
     def _trim_to_budget(merged: list, max_tokens: int) -> list:
-        """Trim merged results to fit within a token budget (1 token ≈ 3 chars)."""
+        """Trim merged results to fit within a token budget."""
+        try:
+            from context_composer import estimate_tokens
+        except ImportError:
+            def estimate_tokens(text):
+                return len(text) // 3
         result = []
         budget_used = 0
         for item in merged:
-            est = len(item.get("content", "")) // 3
+            est = estimate_tokens(item.get("content", ""))
             if budget_used + est > max_tokens and result:
                 break
             result.append(item)
@@ -372,7 +489,8 @@ class MemoryHub:
 
         return scored
 
-    def _recall_kg(self, query: str, max_nodes: int = 8) -> List[Dict]:
+    def _recall_kg(self, query: str, max_nodes: int = 8,
+                   min_score: float = 0.35) -> List[Dict]:
         """Find KG nodes related to the query and their logical relationships."""
         try:
             from second_brain.knowledge_graph import kg, KGEdgeType
@@ -388,23 +506,28 @@ class MemoryHub:
                     all_nodes = kg.get_all_nodes()
                     scored = []
                     for node in all_nodes:
-                        n_vec = np.array(embed_d(node.content), dtype=np.float32)
+                        vec = node.embedding if hasattr(node, 'embedding') and node.embedding is not None else None
+                        if vec is None:
+                            vec = embed_d(node.content)
+                        n_vec = np.array(vec, dtype=np.float32)
                         sim = float(np.dot(q_vec, n_vec))
-                        if sim > 0.3:
+                        if sim > min_score:
                             scored.append((sim, node))
                     scored.sort(key=lambda x: x[0], reverse=True)
-                    top_nodes = [n for _, n in scored[:max_nodes]]
+                    top_nodes = [(s, n) for s, n in scored[:max_nodes]]
                 else:
-                    top_nodes = kg.find_node_by_content(query, max_results=max_nodes)
+                    top_nodes = [(0.5, n) for n in kg.find_node_by_content(query, max_results=max_nodes)]
             except Exception:
-                top_nodes = kg.find_node_by_content(query, max_results=max_nodes)
+                top_nodes = [(0.5, n) for n in kg.find_node_by_content(query, max_results=max_nodes)]
 
             if not top_nodes:
                 return []
 
+            node_scores = {n.id: s for s, n in top_nodes}
+
             relations = []
             seen_pairs = set()
-            for node in top_nodes:
+            for _, node in top_nodes:
                 edges = kg.get_edges(node.id, direction="both")
                 for src, tgt, data in edges[:5]:
                     pair_key = (min(src, tgt), max(src, tgt))
@@ -427,12 +550,18 @@ class MemoryHub:
                         KGEdgeType.ADDRESSES.value,
                     )
 
+                    relevance = max(
+                        node_scores.get(src, 0.0),
+                        node_scores.get(tgt, 0.0),
+                    )
+
                     relations.append({
                         "description": desc,
                         "edge_type": edge_type,
                         "source_content": src_node.content[:150],
                         "target_content": tgt_node.content[:150],
                         "weight": data.get("weight", 0.5),
+                        "relevance": round(relevance, 4),
                         "is_critical": is_critical,
                         "metadata": {
                             "source_id": src, "target_id": tgt,
