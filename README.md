@@ -9,7 +9,7 @@ pip install -e .                       # install
 memory-cli server-start                # start (first run takes ~3 min to load model)
 memory-cli health                      # confirm ready
 memory-cli remember "Learned X today"  # store a memory
-memory-cli recall "X"                  # recall (4-layer Context Composer: skills > KG > evidence > conflicts)
+memory-cli recall "X"                  # recall (5-stage Context Composer: routing → relevance gate → layered assembly → quality → budget)
 memory-cli briefing                    # daily briefing
 ```
 
@@ -29,7 +29,7 @@ The subsystems (Memora, Chronos, MSA, Second Brain) were not originally designed
 |------|--------|-------|
 | **Fragmented ingest** | **Largely satisfied** | `remember`, daily `memory/*.md`, AutoIngestor, HTTP API; text-first (video/chat need export/transcription upstream). |
 | **Persistence over time** | **Largely satisfied** | JSONL vector store, daily logs, bookmarks, ingestion state; dedup prevents runaway duplicates. MSA auto-syncs daily logs for cross-day reasoning. |
-| **Recall when needed** | **Satisfied** | 4-layer Context Composer: **L1 Core Facts → L2 Concept Links → L3 Background → L4 Conflicts**. Hybrid retrieval (BM25+dense) → cross-encoder reranking → strategy-routed assembly. Deep-recall multi-hop. |
+| **Recall when needed** | **Satisfied** | 5-stage Context Composer: **Strategy Router → Relevance Gate (CJK-optimized) → Layered Assembly (L1-L4) → Quality Gate → Budget Controller**. Hybrid retrieval (BM25+dense) → cross-encoder reranking → strategy-routed assembly. Deep-recall multi-hop. |
 | **Light structure & weaving** | **Partial** | KG + relation extraction (with `structural_gain` scoring), digests (with `compression_value` scoring), collision engine; adds edges and insights — not guaranteed holistic systemization. |
 | **Proactive nudges** | **Partial** | Scheduler + Telegram for briefing, collision, dormant check, contradiction scan, blindspot scan, skill proposals. Not fully task-grounded. |
 | **Systematic + professional depth** | **Not satisfied** | No automatic curriculum or domain mastery loop; depth comes from **how you use** recall + LLM, not from a finished "become expert" pipeline. |
@@ -38,7 +38,7 @@ The subsystems (Memora, Chronos, MSA, Second Brain) were not originally designed
 | **Learning quality & intent** | **Partial** | Ingest tags (`thought`, `share`, `reference`, `to_verify`) supported; not yet used for differential processing. |
 | **Problem-triggered surfacing** | **Partially satisfied** | Assembled recall returns skills + KG relations + evidence as layered context; session-context includes active skills. No first-class "current task object" yet. |
 
-**Summary:** The system has progressed from **durable capture + retrieval** to a **closed-loop skill evolution pipeline** with production-grade recall: fragments → KG/Digest/Collision processing → auto-proposed skills → Context Composer (hybrid retrieval → reranking → 4-layer assembly) → usage feedback → skill refinement. v0.0.8 adds hybrid BM25+dense retrieval, cross-encoder reranking, Context Composer with strategy routing, KG node embeddings, and task-prefixed embedding for nomic-embed-text. The remaining gap is **true parametric learning** (Nebius fine-tuning).
+**Summary:** The system has progressed from **durable capture + retrieval** to a **closed-loop skill evolution pipeline** with production-grade recall: fragments → KG/Digest/Collision processing → auto-proposed skills → Context Composer (hybrid retrieval → reranking → 5-stage assembly) → usage feedback → skill refinement. v0.0.8 adds: 5-stage Context Composer with CJK-optimized Relevance Gate, hybrid BM25+dense retrieval, cross-encoder reranking, KG node embeddings, task-prefixed embedding, Gateway plugin with context injection fix, and tracker noise filtering. The remaining gap is **true parametric learning** (Nebius fine-tuning).
 
 ## Architecture
 
@@ -72,7 +72,10 @@ Fragments → [Ingest + Tag] → Unified Corpus (Memora vectors + optional long-
              │           │           │
              └─────── [Reranker] ───┘              ← cross-encoder reranking
                          │
-                  [Context Composer]                ← strategy-routed 4-layer assembly
+                  [Context Composer]                ← 5-stage assembly pipeline
+                         │
+                  [Relevance Gate]                  ← CJK bigram / Latin cross-encoder
+                         │
                   ┌──────┼──────┐──────┐
                   ↓      ↓      ↓      ↓
               L1 Core  L2 Links L3 BG  L4 Conflicts
@@ -141,12 +144,12 @@ Content is tagged at ingestion time to track cognitive intent:
 
 | Component | Role |
 |-----------|------|
-| **Memory Hub** | Unified router — auto-selects subsystems based on content length and importance (>=0.85 triggers Chronos + MSA); recall delegates to Context Composer (4-layer assembly with strategy routing, cross-encoder reranking, conflict scan, token budget control); extensible post-remember/post-recall hooks |
+| **Memory Hub** | Unified router — auto-selects subsystems based on content length and importance (>=0.85 triggers Chronos + MSA); recall delegates to Context Composer (5-stage assembly with strategy routing, relevance gate, cross-encoder reranking, conflict scan, token budget control); gate_stats forwarded in API response |
 | **Memory Server** | Persistent HTTP daemon — keeps embedding model loaded, exposes all operations as REST endpoints, async task queue, built-in scheduler + Telegram push |
 | **memory-cli** | Zero-dependency HTTP client — async polling with progress spinner for long-running tasks |
 | **LLM Client** | Multi-provider LLM router (OpenRouter primary, xAI fallback) — used by digest, interleave, consolidation, collision, KG extraction, skill rewrite, and attention focus extraction |
 | **Shared Embedder** | Singleton `nomic-ai/nomic-embed-text-v1.5` with task-prefixed encoding (`search_document:` / `search_query:`). Shared across Memora, MSA, KG node embeddings, and skill routing |
-| **Context Composer** | 4-stage recall assembly: strategy router (intent classification) → layered assembly (L1-L4 with MMR dedup) → quality gate → CJK-aware budget controller |
+| **Context Composer** | 5-stage recall assembly: strategy router (intent classification) → relevance gate (CJK bigram / Latin cross-encoder, adaptive threshold) → layered assembly (L1-L4 with MMR dedup) → quality gate → CJK-aware budget controller |
 | **BM25 Index** | Zero-dependency sparse retrieval (Okapi BM25 with Chinese tokenization support). Fused with dense results via Reciprocal Rank Fusion |
 | **Reranker** | Cross-encoder second-stage reranking (ms-marco-MiniLM-L-6-v2, 22M params). Falls back to pass-through when unavailable |
 
@@ -168,32 +171,40 @@ Content arrives at hub.remember()
 
 ### Query Routing (Context Composer Recall)
 
-**`recall`** uses a 4-stage pipeline to produce context-composed output:
+**`recall`** uses a 5-stage pipeline to produce context-composed output:
 
 ```
 query
   │
-  ├─ Stage 1: Raw Retrieval (parallel)
-  │    ├── Skill Registry (vector similarity → active skills)
-  │    ├── Knowledge Graph (semantic node matching via cached embeddings)
-  │    ├── Memora (hybrid: BM25 sparse + dense cosine → RRF fusion)
-  │    └── MSA documents (sparse routing + LLM interleave)
+  ├─ Stage 1: Strategy Router
+  │    └── Classify intent (factual/thinking/planning/review)
+  │         → determines per-layer token allocation
   │
-  ├─ Stage 2: Reranking
-  │    └── Cross-encoder (ms-marco-MiniLM-L-6-v2) rescores evidence candidates
+  ├─ Stage 2: Relevance Gate  ← NEW in v0.0.8
+  │    ├── CJK text: bigram overlap scoring (optimized for Chinese)
+  │    ├── Latin text: cross-encoder (ms-marco-MiniLM-L-6-v2)
+  │    ├── Adaptive threshold based on query specificity
+  │    └── gate_stats: tracks passed/rejected counts per layer
   │
-  ├─ Stage 3: Conflict Scan
-  │    └── KG contradiction edges + inference engine → real-time conflict detection
+  ├─ Stage 3: Layered Assembly (with MMR dedup)
+  │    ├── Raw Retrieval (parallel):
+  │    │    ├── Skill Registry (vector similarity → active skills)
+  │    │    ├── Knowledge Graph (semantic node matching via cached embeddings)
+  │    │    ├── Memora (hybrid: BM25 sparse + dense cosine → RRF fusion)
+  │    │    └── MSA documents (sparse routing + LLM interleave)
+  │    ├── Cross-encoder reranking of evidence candidates
+  │    ├── Conflict scan (KG contradiction edges + inference engine)
+  │    └── Assembly:
+  │         L1 Core Facts     — skills + highest-relevance evidence
+  │         L2 Concept Links  — KG relations + conceptual associations
+  │         L3 Background     — long-term summaries, lower-rank evidence
+  │         L4 Conflicts      — contradictions + warnings
   │
-  └─ Stage 4: Context Composer
-       ├── Strategy Router: classify intent (factual/thinking/planning/review)
-       ├── Layered Assembly with MMR dedup:
-       │    L1 Core Facts     — skills + highest-relevance evidence
-       │    L2 Concept Links  — KG relations + conceptual associations
-       │    L3 Background     — long-term summaries, lower-rank evidence
-       │    L4 Conflicts      — contradictions + warnings
-       ├── Quality Gate: multi-dim scoring (relevance × recency × importance)
-       └── Budget Controller: CJK-aware token estimation, dynamic rebalancing
+  ├─ Stage 4: Quality Gate
+  │    └── Multi-dim scoring (relevance × recency × importance)
+  │
+  └─ Stage 5: Budget Controller
+       └── CJK-aware token estimation, dynamic rebalancing
             → trimmed to max_tokens (default 4000)
 ```
 
@@ -341,7 +352,7 @@ The server loads the SentenceTransformer model once (~3s), then serves all reque
 # Remember something (auto-routes to appropriate subsystems + KG extraction)
 memory-cli remember "User prefers dark theme, dislikes popup notifications" -i 0.9
 
-# Search memories (4-layer Context Composer: hybrid retrieval -> reranking -> assembly)
+# Search memories (5-stage Context Composer: hybrid retrieval -> relevance gate -> assembly)
 memory-cli recall "user UI preferences"
 
 # Deep multi-hop reasoning (with skill context)
@@ -388,7 +399,7 @@ msa/                         # Unified Corpus — long-document store (Memory Sp
     bridge.py                # Integration with cross-indexing to Memora
 second_brain/                # Intelligence Layer — KG / Digest / Collision / Skill Proposal
     digest.py                # LLM summarization + compression_value scoring
-    tracker.py               # Vitality scoring, dormancy detection, trends
+    tracker.py               # Vitality scoring, dormancy detection, trends, noise filtering (ingestion + query)
     collision.py             # 7-strategy inspiration engine (5 RAG + 2 KG-driven)
     strategy_weights.py      # Adaptive collision strategy selection via ratings
     knowledge_graph.py       # KGNode/KGEdge + NetworkX DiGraph + per-node semantic embeddings
@@ -409,13 +420,13 @@ chronos/                     # Training Layer — Nebius fine-tuning pipeline
 memory_server.py             # HTTP daemon + scheduler + Telegram push + async queue + KG embedding backfill
 memory_hub.py                # Unified ingestion/query router + Context Composer recall pipeline
 memory_cli.py                # Thin HTTP client with async polling
-context_composer.py          # 4-stage context assembly: strategy router → layered assembly → quality gate → budget controller
+context_composer.py          # 5-stage context assembly: strategy router → relevance gate → layered assembly → quality gate → budget controller
 bm25.py                      # Zero-dependency BM25 sparse retrieval (Chinese tokenization support)
 reranker.py                  # Cross-encoder reranking (ms-marco-MiniLM-L-6-v2, 22M params)
 llm_client.py                # Multi-provider LLM router (OpenRouter / xAI)
 shared_embedder.py           # Singleton embedding model
 setup.py                     # Package configuration
-tests/                       # 536 unit tests across 17 files
+tests/                       # 482 unit tests across 17 files
     test_memora.py
     test_chronos.py
     test_msa.py
@@ -431,6 +442,9 @@ tests/                       # 536 unit tests across 17 files
     test_doc_consistency.py  # Guards against doc/code drift
     test_cli_coverage.py
     ...
+plugin/                      # OpenClaw Gateway plugin (TypeScript)
+    index.ts                 # Memory-pro plugin: context injection, before_prompt_build hook, config resolution
+    package.json             # Plugin package manifest
 skills/                      # OpenClaw skill manifests
 AGENTS.md                    # Agent behavior configuration
 HEARTBEAT.md                 # Periodic task definitions
@@ -447,7 +461,7 @@ python3 -m pytest tests/ -q
 python3 -m pytest tests/ --cov=memora --cov=chronos --cov=msa --cov=second_brain --cov=skill_registry --cov=memory_server --cov=memory_hub -q
 ```
 
-536 tests across 17 files, covering all subsystems (Memora hybrid search, MSA, Second Brain KG/inference/skill proposer, Chronos training pipeline, Skill Registry with utility tracking), the server, the hub (Context Composer pipeline), and the CLI layer.
+482 tests across 17 files, covering all subsystems (Memora hybrid search, MSA, Second Brain KG/inference/skill proposer, Chronos training pipeline, Skill Registry with utility tracking), the server, the hub (Context Composer pipeline with relevance gate), and the CLI layer.
 
 ## Embedding Model
 
@@ -467,8 +481,43 @@ See [STUBS.md](STUBS.md) for a full catalog of stubbed/simulated components. Key
 - **Chronos Nebius Client**: Skeleton only — `upload_dataset`, `create_job`, `poll_job` raise `NotImplementedError`. See [NEBIUS_FINETUNE_INTEGRATION_SKETCH.md](docs/NEBIUS_FINETUNE_INTEGRATION_SKETCH.md) for the integration plan.
 - **Chronos EWC/LoRA**: `ewc.py` and `dynamic_lora.py` still exist on disk but are **no longer imported** by any production code (deprecated since v0.0.3-beta).
 - **Skill Registry**: Auto-proposal pipeline works. v0.0.7 adds `action_type` binding (`prompt_template` / `tool_call` / `webhook`) with auto-generated executable prompts. Full executable workflows (code generation + test scaffolding) as in [Memento-Skills](https://arxiv.org/abs/2603.18743) are not yet implemented. Behaviour-aligned router training requires more usage data accumulation.
-- **Cross-Encoder Reranker**: Uses `ms-marco-MiniLM-L-6-v2` (22M params, English-optimized). Falls back to pass-through when model is unavailable. Chinese reranking quality may be limited.
+- **Cross-Encoder Reranker**: Uses `ms-marco-MiniLM-L-6-v2` (22M params, English-optimized). Falls back to pass-through when model is unavailable. Chinese reranking quality may be limited — the Relevance Gate compensates with CJK-specific bigram scoring.
+- **Gateway Plugin**: The `plugin/index.ts` context injection is controlled by `contextInjection` in `openclaw.json`. When disabled, the `before_prompt_build` hook is a no-op. Context is still available via `memory-cli` commands as defined in `AGENTS.md`.
 - **Daemon + MPS**: The daemon process forces CPU mode because macOS Metal services are unavailable after `setsid()`. Foreground mode uses MPS (Apple GPU) normally.
+
+## Changelog
+
+### v0.0.8 (2026-03-26)
+
+**Context Injection Fix:**
+- Fixed `plugin/index.ts` `resolvedConfig()` nested config parsing bug — `contextInjection: false` now correctly takes effect
+- Removed stale `.tgz` package that caused duplicate plugin registration via `before_prompt_build` hook
+- Purged 1300+ noise entries from tracker access_log (heartbeat commands, Telegram metadata, benchmark queries)
+- Added dual-layer noise filtering to `second_brain/tracker.py` (ingestion + query)
+- Cleaned quantum test data pollution from `PERSONALITY.yaml`, KG stores, and daily logs
+- `session-context` API: de-duplicated recent_focus, truncated long query labels, filtered knowledge_anchors
+
+**Context Composer — 5-Stage Pipeline:**
+- Added Stage 2: Relevance Gate between Strategy Router and Layered Assembly
+- CJK text uses bigram overlap scoring (optimized for Chinese); Latin text uses cross-encoder
+- Adaptive threshold based on query specificity (specific queries get stricter gating)
+- `gate_stats` (passed/rejected counts per layer) forwarded through Memory Hub API response
+
+**MSA Module Review:**
+- `msa/encoder.py` hybrid search: dense + BM25 + Reciprocal Rank Fusion
+- New `bm25.py` (zero-dependency sparse retrieval with Chinese tokenization) and `reranker.py` modules
+
+**Other:**
+- `memora/vectorstore.py`: fixed hybrid search `min_score` filtering — near-zero scores no longer incorrectly rejected when `min_score=0.0`
+- `memory_hub.py`: layered recall architecture refactor, gate_stats pass-through
+- `memory_cli.py`: fixed `session-context` display for `active_threads` (correct field names)
+- 482 unit tests passed, 0 failures
+
+### v0.0.7
+
+- Skill `action_type` binding (`prompt_template` / `tool_call` / `webhook`) with auto-generated executable prompts
+- Attention-aware anchor selection for collision engine
+- Focus keyword extraction from recent memories
 
 ## License
 
