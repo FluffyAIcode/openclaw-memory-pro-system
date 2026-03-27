@@ -23,26 +23,26 @@ class TestMemoraCLI:
 
     def test_add_command(self):
         with patch("sys.argv", ["memora", "add", "test", "content", "-i", "0.8"]), \
-             patch("memora.cli.bridge") as mb, \
+             patch("memory_hub.hub") as mh, \
              patch("memora.cli.console"):
-            mb.save_to_both.return_value = {"timestamp": "t"}
+            mh.remember.return_value = {"word_count": 2, "systems_used": ["memora"]}
             from memora.cli import main
             main()
-            mb.save_to_both.assert_called_once()
+            mh.remember.assert_called_once()
 
     def test_search_no_results(self):
         with patch("sys.argv", ["memora", "search", "nothing"]), \
-             patch("memora.cli.bridge") as mb, \
+             patch("memora.vectorstore.vector_store") as mvs, \
              patch("memora.cli.console"):
-            mb.search_across.return_value = []
+            mvs.search.return_value = []
             from memora.cli import main
             main()
 
     def test_search_with_results(self):
         with patch("sys.argv", ["memora", "search", "python"]), \
-             patch("memora.cli.bridge") as mb, \
+             patch("memora.vectorstore.vector_store") as mvs, \
              patch("memora.cli.console"):
-            mb.search_across.return_value = [
+            mvs.search.return_value = [
                 {"score": 0.9, "content": "Python is great"}
             ]
             from memora.cli import main
@@ -50,11 +50,11 @@ class TestMemoraCLI:
 
     def test_digest_command(self):
         with patch("sys.argv", ["memora", "digest", "--days", "3"]), \
-             patch("memora.cli.bridge") as mb, \
+             patch("second_brain.digest.digest_memories") as md, \
              patch("memora.cli.console"):
             from memora.cli import main
             main()
-            mb.auto_digest.assert_called_once()
+            md.assert_called_once()
 
     def test_status_command(self):
         with patch("sys.argv", ["memora", "status"]), \

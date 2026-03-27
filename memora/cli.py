@@ -7,7 +7,6 @@ import argparse
 import logging
 from rich.console import Console
 
-from .bridge import bridge
 from .config import load_config
 
 console = Console()
@@ -40,8 +39,9 @@ def main():
         return
 
     if args.command == "add":
+        from memory_hub import hub
         content = " ".join(args.content)
-        bridge.save_to_both(
+        hub.remember(
             content=content,
             source=args.source,
             importance=args.importance,
@@ -49,8 +49,9 @@ def main():
         console.print("[green]✓ 记忆已通过 CLI 添加[/green]")
 
     elif args.command == "search":
+        from .vectorstore import vector_store
         query = " ".join(args.query)
-        results = bridge.search_across(query)
+        results = vector_store.search(query, limit=8)
         if not results:
             console.print("[yellow]未找到相关记忆[/yellow]")
             return
@@ -61,7 +62,8 @@ def main():
             console.print(f"  [{score}] {text}")
 
     elif args.command == "digest":
-        bridge.auto_digest()
+        from second_brain.digest import digest_memories
+        digest_memories(days=config.digest_interval_days)
         console.print("[green]✓ 记忆提炼完成[/green]")
 
     elif args.command == "status":

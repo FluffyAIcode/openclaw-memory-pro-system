@@ -7,7 +7,7 @@
 
 import { spawn, ChildProcess } from "child_process";
 import { resolve, dirname } from "path";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { IncomingMessage, ServerResponse } from "http";
 // Tool parameters use plain JSON Schema (TypeBox compatible)
 
@@ -39,6 +39,7 @@ const DEFAULTS: Required<MemoryProConfig> = {
 
 let serverProcess: ChildProcess | null = null;
 let serverReady = false;
+let authToken: string | null = null;
 
 function resolvedConfig(pluginConfig?: Record<string, unknown>): Required<MemoryProConfig> {
   const raw = pluginConfig ?? {};
@@ -58,6 +59,34 @@ function workspaceDir(cfg: Required<MemoryProConfig>): string {
 }
 
 // ---------------------------------------------------------------------------
+// Auth token
+// ---------------------------------------------------------------------------
+
+function loadAuthToken(cfg: Required<MemoryProConfig>): string | null {
+  if (authToken !== null) return authToken || null;
+  const wsDir = workspaceDir(cfg);
+  const tokenPath = resolve(wsDir, "memory", "security", ".auth_token");
+  try {
+    if (existsSync(tokenPath)) {
+      authToken = readFileSync(tokenPath, "utf-8").trim();
+      return authToken || null;
+    }
+  } catch {
+    // token file not readable — fall through
+  }
+  authToken = "";
+  return null;
+}
+
+function authHeaders(cfg: Required<MemoryProConfig>): Record<string, string> {
+  const token = loadAuthToken(cfg);
+  if (token) {
+    return { "Content-Type": "application/json", "Authorization": `Bearer ${token}` };
+  }
+  return { "Content-Type": "application/json" };
+}
+
+// ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
@@ -69,7 +98,7 @@ async function memoryPost(
   const url = `${baseUrl(cfg)}${path}`;
   const resp = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(cfg),
     body: JSON.stringify(body),
   });
   if (!resp.ok) {
@@ -81,7 +110,8 @@ async function memoryPost(
 
 async function memoryGet(cfg: Required<MemoryProConfig>, path: string): Promise<unknown> {
   const url = `${baseUrl(cfg)}${path}`;
-  const resp = await fetch(url);
+  const hdrs = authHeaders(cfg);
+  const resp = await fetch(url, { headers: hdrs });
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`Memory server ${path} returned ${resp.status}: ${text}`);

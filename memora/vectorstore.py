@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import threading
@@ -67,13 +68,19 @@ class VectorStore:
             logger.debug("BM25 index build failed: %s", e)
             self._bm25 = None
 
+    @staticmethod
+    def _content_hash(text: str) -> str:
+        return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+
     def contains(self, content: str) -> bool:
-        """Check if content (by first 80 chars) already exists in the store."""
+        """Check if content already exists (fast prefix check + full hash verification)."""
         entries = self._load()
         prefix = content.strip()[:80]
+        content_hash = self._content_hash(content)
         for e in entries:
             if e.get("content", "").strip()[:80] == prefix:
-                return True
+                if self._content_hash(e.get("content", "")) == content_hash:
+                    return True
         return False
 
     def add(self, content: str, metadata: dict = None, dedup: bool = True):

@@ -97,17 +97,96 @@ class TrainingDistiller:
         logger.info("Buffer 数据集已生成: %s (%d 条样本)", dataset_path, len(samples))
         return dataset_path
 
+    def prepare_from_skills(self) -> Path:
+        """Generate training rows from active skills in the Skill Registry.
+
+        Each skill produces 1-3 instruction/response pairs depending on
+        how much structured content is available (procedures, scenarios, etc.).
+        """
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        dataset_path = self.output_dir / f"skills_{datetime.now().strftime('%Y%m%d')}.jsonl"
+
+        try:
+            from skill_registry import registry
+        except ImportError:
+            logger.warning("skill_registry not available, skipping skill distillation")
+            return dataset_path
+
+        active_skills = registry.list_active()
+        if not active_skills:
+            logger.info("No active skills for training data generation")
+            return dataset_path
+
+        samples = []
+        for skill in active_skills:
+            samples.extend(self._skill_to_training_rows(skill))
+
+        with open(dataset_path, "w", encoding="utf-8") as f:
+            for s in samples:
+                f.write(json.dumps(s, ensure_ascii=False) + "\n")
+
+        logger.info("Skills 数据集已生成: %s (%d rows from %d skills)",
+                     dataset_path, len(samples), len(active_skills))
+        return dataset_path
+
+    @staticmethod
+    def _skill_to_training_rows(skill) -> list:
+        """Convert a single Skill into 1-3 fine-tune training rows."""
+        rows = []
+        ts = skill.updated_at or skill.created_at
+        tags_str = ", ".join(skill.tags) if skill.tags else ""
+
+        rows.append({
+            "instruction": f"关于「{skill.name}」，你知道什么？请详细说明。",
+            "input": f"标签: {tags_str}" if tags_str else "",
+            "output": skill.structured_content(),
+            "source": "skill_registry",
+            "source_id": f"{skill.id}_knowledge",
+            "importance": 0.9,
+            "timestamp": ts,
+        })
+
+        if skill.procedures:
+            rows.append({
+                "instruction": f"如何执行「{skill.name}」？请给出具体步骤。",
+                "input": skill.prerequisites or "",
+                "output": skill.procedures,
+                "source": "skill_registry",
+                "source_id": f"{skill.id}_procedure",
+                "importance": 0.9,
+                "timestamp": ts,
+            })
+
+        if skill.applicable_scenarios or skill.inapplicable_scenarios:
+            scenario_output = ""
+            if skill.applicable_scenarios:
+                scenario_output += f"适用场景:\n{skill.applicable_scenarios}\n"
+            if skill.inapplicable_scenarios:
+                scenario_output += f"\n不适用场景:\n{skill.inapplicable_scenarios}\n"
+            rows.append({
+                "instruction": f"「{skill.name}」在什么情况下应该使用，什么情况下不应该使用？",
+                "input": "",
+                "output": scenario_output.strip(),
+                "source": "skill_registry",
+                "source_id": f"{skill.id}_scenario",
+                "importance": 0.85,
+                "timestamp": ts,
+            })
+
+        return rows
+
     def prepare_merged(self, digest_dir: Path = None,
                        buffer_path: Path = None) -> Path:
-        """Merge digest + buffer into a single training dataset."""
+        """Merge digest + buffer + skills into a single training dataset."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
         merged_path = self.output_dir / f"merged_{datetime.now().strftime('%Y%m%d')}.jsonl"
 
         digest_ds = self.prepare_from_digests(digest_dir)
         buffer_ds = self.prepare_from_buffer(buffer_path)
+        skills_ds = self.prepare_from_skills()
 
         rows = []
-        for ds in [digest_ds, buffer_ds]:
+        for ds in [digest_ds, buffer_ds, skills_ds]:
             if ds.exists():
                 for line in ds.read_text(encoding="utf-8").splitlines():
                     if line.strip():

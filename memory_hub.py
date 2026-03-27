@@ -65,6 +65,9 @@ _WORKSPACE = Path(__file__).parent
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 VALID_TAGS = {"thought", "share", "reference", "to_verify"}
+VALID_SENSITIVITIES = {"public", "private", "confidential", "secret"}
+_IMPORTANCE_CAP_UNTRUSTED = 0.9
+_TRUSTED_HIGH_IMPORTANCE_SOURCES = {"openclaw", "agent", "cursor", "manual", "hub"}
 
 
 class MemoryHub:
@@ -137,17 +140,20 @@ class MemoryHub:
     def remember(self, content: str, source: str = "openclaw",
                  importance: float = 0.7,
                  tag: Optional[str] = None,
+                 sensitivity: Optional[str] = None,
                  doc_id: Optional[str] = None,
                  title: Optional[str] = None,
                  force_systems: Optional[List[str]] = None) -> Dict:
         """
-        Smart ingestion with intent tagging.
+        Smart ingestion with intent tagging and sensitivity classification.
 
         Args:
             content: The text to remember
             source: Origin channel (e.g. "telegram", "cursor", "auto_ingest")
             importance: 0.0-1.0 importance score
             tag: Intent tag — thought | share | reference | to_verify
+            sensitivity: Privacy level — public | private | confidential | secret
+                         Auto-classified from content if not provided.
             doc_id: Optional document ID for MSA
             title: Optional title for MSA
             force_systems: Override auto-routing, e.g. ["memora", "msa", "chronos"]
@@ -156,12 +162,30 @@ class MemoryHub:
             logger.warning("Unknown tag '%s', ignoring", tag)
             tag = None
 
+        if sensitivity and sensitivity not in VALID_SENSITIVITIES:
+            logger.warning("Unknown sensitivity '%s', ignoring", sensitivity)
+            sensitivity = None
+
         content = _CONTROL_CHARS.sub("", content)
         source = _CONTROL_CHARS.sub("", source)
         timestamp = datetime.now().isoformat()
 
+        importance = max(0.0, min(importance, 1.0))
+        if source not in _TRUSTED_HIGH_IMPORTANCE_SOURCES and importance > _IMPORTANCE_CAP_UNTRUSTED:
+            logger.info("Importance capped %.2f → %.2f for source='%s'",
+                        importance, _IMPORTANCE_CAP_UNTRUSTED, source)
+            importance = _IMPORTANCE_CAP_UNTRUSTED
+
+        if sensitivity is None:
+            try:
+                from memory_security import classify_sensitivity
+                sensitivity = classify_sensitivity(content)
+            except ImportError:
+                sensitivity = "public"
+
         word_count = max(len(content.split()), len(content) // 2)
-        results = {"word_count": word_count, "systems_used": [], "tag": tag}
+        results = {"word_count": word_count, "systems_used": [], "tag": tag,
+                   "sensitivity": sensitivity}
 
         if force_systems:
             systems = set(force_systems)
@@ -172,6 +196,7 @@ class MemoryHub:
             "source": source,
             "importance": importance,
             "timestamp": timestamp,
+            "sensitivity": sensitivity,
         }
         if tag:
             metadata["tag"] = tag
@@ -316,6 +341,8 @@ class MemoryHub:
             results["budget_stats"] = composed["budget_stats"]
             if composed.get("gate_stats"):
                 results["gate_stats"] = composed["gate_stats"]
+            if composed.get("security_stats"):
+                results["security_stats"] = composed["security_stats"]
             if composed.get("warnings"):
                 results["composer_warnings"] = composed["warnings"]
                 for w in composed["warnings"]:
@@ -347,24 +374,95 @@ class MemoryHub:
 
         return results
 
-    def deep_recall(self, query: str, max_rounds: int = 3) -> Dict:
-        """Multi-hop reasoning using MSA Memory Interleave + Memora context + Skills."""
-        results = {"query": query}
+    def deep_recall(self, query: str, max_rounds: int = 3,
+                    max_tokens: int = 4000) -> Dict:
+        """MSA cross-document multi-hop reasoning with budget control and conflict detection.
 
-        results["skills"] = self._recall_skills(query)
+        Pipeline:
+          1. MSA interleave  — multi-hop retrieval-generation loop
+          2. KG + skills     — supplementary retrieval for conflict scan
+          3. Context Composer — budget control + conflict detection on output
+        """
+        results: Dict = {
+            "query": query,
+            "interleave": None,
+            "skills": [],
+            "kg_relations": [],
+            "contradictions": [],
+            "merged": [],
+            "intent": "",
+            "budget_stats": {},
+        }
 
+        # ── 1. MSA interleave (core multi-hop reasoning) ─────────
         try:
             interleave = self.msa.interleave_query(query, max_rounds=max_rounds)
             results["interleave"] = interleave
         except Exception as e:
             logger.warning("MSA interleave failed: %s", e)
-            results["interleave"] = None
+            return results
+
+        # ── 2. Supplementary retrieval for conflict detection ────
+        results["skills"] = self._recall_skills(query)
+        results["kg_relations"] = self._recall_kg(query)
+        results["contradictions"] = self._scan_recall_conflicts(
+            results["kg_relations"])
+
+        # ── 3. Context Composer: budget control + conflict layer ──
+        final_answer = interleave.get("final_answer", "") if isinstance(
+            interleave, dict) else ""
+        composer_input = {
+            "skills": results["skills"],
+            "kg_relations": results["kg_relations"],
+            "evidence": [{
+                "content": final_answer,
+                "score": 1.0,
+                "system": "msa_interleave",
+                "metadata": {
+                    "rounds": interleave.get("rounds", 0),
+                    "docs_used": interleave.get("total_docs_used", 0),
+                },
+            }] if final_answer else [],
+            "memora": [],
+            "msa": [],
+            "contradictions": results["contradictions"],
+        }
 
         try:
-            memora_results = self.vector_store.search(query, limit=5)
-            results["memora_context"] = memora_results[:5]
+            from context_composer import ContextComposer
+            composer = ContextComposer()
+            composed = composer.compose(query, composer_input, max_tokens=max_tokens)
+            results["merged"] = composed["merged"]
+            results["intent"] = composed["intent"]
+            results["budget_stats"] = composed["budget_stats"]
+            if composed.get("security_stats"):
+                results["security_stats"] = composed["security_stats"]
+            if composed.get("warnings"):
+                results["composer_warnings"] = composed["warnings"]
         except Exception as e:
-            results["memora_context"] = []
+            logger.warning("Deep recall composer failed: %s", e)
+            merged = []
+            if final_answer:
+                merged.append({
+                    "content": final_answer, "score": 1.0,
+                    "system": "msa_interleave", "layer": "core",
+                })
+            for c in results["contradictions"]:
+                merged.append({
+                    "content": c.get("decision_content", ""),
+                    "score": c.get("risk_score", 0.5),
+                    "system": "conflict", "layer": "conflict",
+                })
+            results["merged"] = merged
+
+        logger.info(
+            "Deep recall: rounds=%s docs=%s skills=%d kg=%d conflicts=%d "
+            "merged=%d for '%s'",
+            interleave.get("rounds", "?"), interleave.get("total_docs_used", "?"),
+            len(results["skills"]), len(results["kg_relations"]),
+            len(results["contradictions"]), len(results["merged"]),
+            query[:60],
+        )
 
         return results
 

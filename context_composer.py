@@ -1,9 +1,10 @@
 """
-Context Composer — 5-stage context assembly pipeline for OpenClaw recall.
+Context Composer — 6-stage context assembly pipeline for OpenClaw recall.
 
 Architecture:
   Stage 1 — Strategy Router:    score-based intent classification → layer weights
   Stage 2 — Relevance Gate:     cross-encoder / n-gram query-relevance verification
+  Stage 2.5 — Security Gate:    multi-signal trust scoring + PII detection (memory_security)
   Stage 3 — Layered Assembly:   4 layers with MMR dedup
   Stage 4 — Quality Gate:       multi-dim scoring (relevance × recency × importance)
   Stage 5 — Budget Controller:  CJK-aware token estimation + dynamic rebalancing
@@ -501,9 +502,22 @@ class ContextComposer:
             max_tokens: total token budget
 
         Returns:
-            dict with: merged, layers, intent, budget_stats, warnings
+            dict with: merged, layers, intent, budget_stats, warnings,
+                       security_stats, gate_stats
         """
         intent = classify_intent(query)
+
+        # ── Stage 2.5: Security Gate ──────────────────────────────
+        security_stats = {}
+        try:
+            from memory_security import SecurityGate
+            security_gate = SecurityGate()
+            raw, security_stats = security_gate.filter_raw(raw, query)
+        except ImportError:
+            logger.warning("memory_security module not available, skipping security gate")
+        except Exception as e:
+            logger.error("Security gate failed: %s", e, exc_info=True)
+
         weights = LAYER_WEIGHTS[intent]
         budget = BudgetController(max_tokens, weights)
         force_cap = int(max_tokens * FORCE_ADD_CAP_RATIO)
@@ -545,6 +559,13 @@ class ContextComposer:
                 gate_stats["passed"], gate_stats["rejected"], query[:40],
                 [r[:60] for r in gate_stats["rejected_items"][:3]])
 
+        if security_stats.get("blocked", 0) > 0:
+            warnings.append(
+                f"Security gate blocked {security_stats['blocked']} items")
+        if security_stats.get("flagged", 0) > 0:
+            warnings.append(
+                f"Security gate flagged {security_stats['flagged']} items")
+
         logger.info(
             "Composed: intent=%s, L1=%d L2=%d L3=%d L4=%d, total=%d items, "
             "budget=%s, global=%s for '%s'",
@@ -567,6 +588,7 @@ class ContextComposer:
             "budget_stats": budget.stats(),
             "global_budget": gs,
             "gate_stats": gate_stats,
+            "security_stats": security_stats,
             "warnings": warnings,
         }
 

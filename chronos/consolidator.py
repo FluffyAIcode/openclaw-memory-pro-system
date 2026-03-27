@@ -144,6 +144,41 @@ class MemoryConsolidator:
                 l for l in lines if not l.strip().startswith("```")
             )
 
+        _EXPECTED_KEYS = {
+            "core_beliefs", "communication_style", "knowledge_anchors",
+            "learned_preferences", "important_decisions",
+        }
+        try:
+            import yaml
+            parsed = yaml.safe_load(yaml_content)
+            if not isinstance(parsed, dict):
+                logger.warning("PERSONALITY.yaml rejected: not a dict (type=%s)",
+                               type(parsed).__name__)
+                return False
+            if not parsed.keys() & _EXPECTED_KEYS:
+                logger.warning("PERSONALITY.yaml rejected: no expected keys found (%s)",
+                               list(parsed.keys())[:5])
+                return False
+        except Exception as e:
+            logger.warning("PERSONALITY.yaml rejected: YAML parse error: %s", e)
+            return False
+
+        try:
+            from memory_security import check_content_safety, SecurityAuditLogger
+            for key, value in parsed.items():
+                text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+                safety = check_content_safety(text)
+                if not safety.is_safe:
+                    _audit = SecurityAuditLogger()
+                    _audit.log_write_rejection(
+                        "personality_blocked", f"key={key}: {safety.reason}",
+                        text[:200], "chronos_consolidator")
+                    logger.warning("PERSONALITY.yaml rejected: injection in key '%s': %s",
+                                   key, safety.reason)
+                    return False
+        except ImportError:
+            pass
+
         workspace = Path(__file__).parent.parent
         profile_path = workspace / "PERSONALITY.yaml"
 

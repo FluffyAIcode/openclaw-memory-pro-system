@@ -295,7 +295,7 @@ class AutoIngestor:
     @staticmethod
     def _content_hash(text: str) -> str:
         import hashlib
-        return hashlib.md5(text.strip().encode("utf-8")).hexdigest()[:16]
+        return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:24]
 
     def scan_and_ingest(self):
         memory_dir = _WORKSPACE / "memory"
@@ -331,13 +331,26 @@ class AutoIngestor:
                     continue
 
                 try:
+                    from memory_security import check_content_safety, SecurityAuditLogger
+                    safety = check_content_safety(text)
+                    if not safety.is_safe:
+                        _audit = SecurityAuditLogger()
+                        _audit.log_write_rejection(
+                            "auto_ingest_blocked", safety.reason,
+                            text[:200], "auto_ingest")
+                        logger.warning("AutoIngestor: blocked unsafe content: %s",
+                                       safety.reason)
+                        self._seen_hashes.add(h)
+                        continue
+                except ImportError:
+                    pass
+
+                try:
                     from memora.vectorstore import vector_store
                     if vector_store.contains(text):
                         self._seen_hashes.add(h)
                         continue
 
-                    from memora.collector import collector
-                    collector.collect(text, source="auto_ingest", importance=0.6)
                     vector_store.add(text, metadata={
                         "source": "auto_ingest",
                         "importance": 0.6,
@@ -1078,6 +1091,18 @@ def _execute_endpoint(path: str, body: dict) -> dict:
 
 def _save_bookmark(summary: str, topics: list = None) -> dict:
     """Save a conversation bookmark for session continuity."""
+    try:
+        from memory_security import check_content_safety, SecurityAuditLogger
+        safety = check_content_safety(summary)
+        if not safety.is_safe:
+            _audit = SecurityAuditLogger()
+            _audit.log_write_rejection(
+                "bookmark_blocked", safety.reason,
+                summary[:200], "bookmark")
+            return {"error": "content_rejected", "reason": safety.reason}
+    except ImportError:
+        pass
+
     bookmark_path = _WORKSPACE / "memory" / "bookmarks.jsonl"
     bookmark_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
@@ -1217,6 +1242,39 @@ def _compute_milestones() -> dict:
     return milestones
 
 
+_AUTH_EXEMPT_PATHS = {"/health"}
+_auth_token_cache: Optional[str] = None
+
+
+def _check_auth(headers) -> bool:
+    """Verify Bearer token from Authorization or X-Auth-Token header."""
+    global _auth_token_cache
+    if _auth_token_cache is None:
+        try:
+            from memory_security import load_auth_token
+            _auth_token_cache = load_auth_token() or ""
+        except ImportError:
+            _auth_token_cache = ""
+    if not _auth_token_cache:
+        return True
+
+    token = ""
+    auth_header = headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        token = headers.get("X-Auth-Token", "").strip()
+    if not token:
+        return False
+
+    try:
+        from memory_security import verify_auth_token
+        return verify_auth_token(token)
+    except ImportError:
+        import secrets as _secrets
+        return _secrets.compare_digest(token, _auth_token_cache)
+
+
 class MemoryHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the memory API."""
 
@@ -1231,6 +1289,10 @@ class MemoryHandler(BaseHTTPRequestHandler):
                 pass
 
     def _handle_post(self):
+        if self.path not in _AUTH_EXEMPT_PATHS and not _check_auth(self.headers):
+            self._respond(401, {"error": "unauthorized"})
+            return
+
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(content_length)) if content_length else {}
@@ -1282,6 +1344,10 @@ class MemoryHandler(BaseHTTPRequestHandler):
                 pass
 
     def _handle_get(self):
+        if self.path not in _AUTH_EXEMPT_PATHS and not _check_auth(self.headers):
+            self._respond(401, {"error": "unauthorized"})
+            return
+
         if self.path == "/health":
             _task_manager.cleanup()
             self._respond(200, {
@@ -1615,6 +1681,13 @@ def main():
 
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.write_text(str(os.getpid()))
+
+    try:
+        from memory_security import ensure_auth_token
+        token = ensure_auth_token()
+        logger.info("Auth token ready (%d chars)", len(token))
+    except ImportError:
+        logger.warning("memory_security not available, running without auth")
 
     logger.info("Loading shared embedder...")
     _load_shared_embedder()

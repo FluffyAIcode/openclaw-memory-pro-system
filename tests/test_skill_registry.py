@@ -59,7 +59,7 @@ class TestSkillRegistry:
         from skill_registry.registry import SkillRegistry, SkillStatus
         reg = SkillRegistry(registry_dir=tmp_path / "skills")
         s = reg.add("skill1", "content1")
-        result = reg.promote(s.id)
+        result = reg.promote(s.id, force=True)
         assert result.status == SkillStatus.ACTIVE
         assert len(reg.list_active()) == 1
 
@@ -67,7 +67,7 @@ class TestSkillRegistry:
         from skill_registry.registry import SkillRegistry, SkillStatus
         reg = SkillRegistry(registry_dir=tmp_path / "skills")
         s = reg.add("skill1", "content1")
-        reg.promote(s.id)
+        reg.promote(s.id, force=True)
         result = reg.deprecate(s.id)
         assert result.status == SkillStatus.DEPRECATED
         assert len(reg.list_active()) == 0
@@ -101,7 +101,7 @@ class TestSkillRegistry:
         reg = SkillRegistry(registry_dir=tmp_path / "skills")
         reg.add("s1", "c1")
         s2 = reg.add("s2", "c2")
-        reg.promote(s2.id)
+        reg.promote(s2.id, force=True)
         st = reg.stats()
         assert st["total"] == 2
         assert st["by_status"]["draft"] == 1
@@ -112,7 +112,7 @@ class TestSkillRegistry:
         reg1 = SkillRegistry(registry_dir=tmp_path / "skills")
         reg1.add("s1", "c1")
         s2 = reg1.add("s2", "c2")
-        reg1.promote(s2.id)
+        reg1.promote(s2.id, force=True)
 
         reg2 = SkillRegistry(registry_dir=tmp_path / "skills")
         assert len(reg2.list_all()) == 2
@@ -148,7 +148,7 @@ class TestSkillRegistry:
         from skill_registry.registry import SkillRegistry, SkillStatus
         reg = SkillRegistry(registry_dir=tmp_path / "skills")
         s = reg.add("skill1", "content1")
-        reg.promote(s.id)
+        reg.promote(s.id, force=True)
         result = reg.record_feedback(s.id, "test query", "success")
         assert result.successes == 1
         assert result.failures == 0
@@ -158,7 +158,7 @@ class TestSkillRegistry:
         from skill_registry.registry import SkillRegistry
         reg = SkillRegistry(registry_dir=tmp_path / "skills")
         s = reg.add("skill1", "content1")
-        reg.promote(s.id)
+        reg.promote(s.id, force=True)
         reg.record_feedback(s.id, "q1", "failure")
         reg.record_feedback(s.id, "q2", "failure")
         skill = reg.get(s.id)
@@ -211,7 +211,7 @@ class TestSkillRegistry:
         from skill_registry.registry import SkillRegistry, SkillStatus
         reg = SkillRegistry(registry_dir=tmp_path / "skills")
         s = reg.add("bad skill", "incorrect info")
-        reg.promote(s.id)
+        reg.promote(s.id, force=True)
         reg.record_feedback(s.id, "q1", "failure", "wrong answer")
         reg.record_feedback(s.id, "q2", "failure", "not helpful")
         with patch.object(reg, "_trigger_rewrite") as mock_rw:

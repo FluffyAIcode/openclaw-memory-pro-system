@@ -18,7 +18,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import requests
 
@@ -90,6 +90,20 @@ def _get_provider() -> Tuple[Optional[str], str, str]:
     return _resolved
 
 
+_privacy_gateway = None
+
+
+def _get_privacy_gateway():
+    global _privacy_gateway
+    if _privacy_gateway is None:
+        try:
+            from memory_security import PrivacyGateway
+            _privacy_gateway = PrivacyGateway()
+        except ImportError:
+            pass
+    return _privacy_gateway
+
+
 def generate(
     prompt: str,
     system: str = "",
@@ -100,6 +114,7 @@ def generate(
 ) -> Optional[str]:
     """Call the configured LLM provider and return generated text.
 
+    PII in prompt/system is masked before sending and restored in the response.
     Returns None if no API key is available or the call fails.
     """
     key, api_url, default_model = _get_provider()
@@ -108,6 +123,14 @@ def generate(
 
     if not model:
         model = default_model
+
+    gateway = _get_privacy_gateway()
+    prompt_map: Dict[str, str] = {}
+    sys_map: Dict[str, str] = {}
+    if gateway:
+        prompt, prompt_map = gateway.mask(prompt)
+        if system:
+            system, sys_map = gateway.mask(system)
 
     messages = []
     if system:
@@ -136,7 +159,13 @@ def generate(
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        result = data["choices"][0]["message"]["content"]
+
+        combined_map = {**prompt_map, **sys_map}
+        if result and combined_map and gateway:
+            result = gateway.unmask(result, combined_map)
+
+        return result
     except requests.exceptions.Timeout:
         logger.error("LLM API call timed out after %ds (%s, model=%s)",
                       timeout, api_url, model)

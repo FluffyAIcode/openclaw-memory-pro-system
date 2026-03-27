@@ -232,6 +232,19 @@ class SkillRegistry:
             action_type: str = "",
             action_config: Dict = None) -> Skill:
         """Register a new skill (defaults to draft). Auto-generates prompt_template if not provided."""
+        try:
+            from memory_security import check_content_safety, SecurityAuditLogger
+            scan_text = f"{name} {content} {procedures} {prerequisites}"
+            safety = check_content_safety(scan_text)
+            if not safety.is_safe:
+                _audit = SecurityAuditLogger()
+                _audit.log_write_rejection(
+                    "skill_add_blocked", safety.reason,
+                    scan_text[:200], "skill_registry")
+                raise ValueError(f"Skill content rejected: {safety.reason}")
+        except ImportError:
+            pass
+
         if not action_type and (procedures or content):
             action_type = "prompt_template"
             action_config = self._build_default_prompt_template(
@@ -267,12 +280,48 @@ class SkillRegistry:
         parts.append("Use the above to help the user solve their problem.")
         return {"template": "\n\n".join(parts)}
 
-    def promote(self, skill_id: str) -> Optional[Skill]:
-        """Promote a draft skill to active."""
+    _PROMOTE_COOLDOWN_HOURS = 1.0
+
+    def promote(self, skill_id: str, force: bool = False) -> Optional[Skill]:
+        """Promote a draft skill to active.
+
+        Requires the skill to have existed for at least _PROMOTE_COOLDOWN_HOURS
+        unless force=True. Re-scans content for injection patterns.
+        """
         skills = self._load()
         skill = skills.get(skill_id)
         if not skill:
             return None
+
+        if not force:
+            try:
+                created = datetime.fromisoformat(skill.created_at)
+                age_hours = (datetime.now() - created).total_seconds() / 3600
+                if age_hours < self._PROMOTE_COOLDOWN_HOURS:
+                    logger.warning("Skill promote blocked: %s is %.1f hours old (min=%.1f)",
+                                   skill.name, age_hours, self._PROMOTE_COOLDOWN_HOURS)
+                    return None
+            except (ValueError, TypeError):
+                pass
+
+        try:
+            from memory_security import check_content_safety, SecurityAuditLogger
+            scan_text = f"{skill.name} {skill.content} {skill.procedures}"
+            exec_prompt = skill.executable_prompt()
+            if exec_prompt:
+                scan_text += f" {exec_prompt}"
+            safety = check_content_safety(scan_text)
+            if not safety.is_safe:
+                _audit = SecurityAuditLogger()
+                _audit.log_write_rejection(
+                    "skill_promote_blocked", safety.reason,
+                    scan_text[:200], "skill_registry")
+                logger.warning("Skill promote blocked (injection): %s — %s",
+                               skill.name, safety.reason)
+                return None
+        except ImportError:
+            pass
+
         skill.status = SkillStatus.ACTIVE
         skill.updated_at = datetime.now().isoformat()
         self._save_all()
@@ -396,6 +445,20 @@ class SkillRegistry:
             )
 
             if rewritten and len(rewritten.strip()) > 50:
+                try:
+                    from memory_security import check_content_safety, SecurityAuditLogger
+                    safety = check_content_safety(rewritten)
+                    if not safety.is_safe:
+                        _audit = SecurityAuditLogger()
+                        _audit.log_write_rejection(
+                            "skill_rewrite_blocked", safety.reason,
+                            rewritten[:200], "skill_rewrite")
+                        logger.warning("Skill rewrite rejected (injection): %s — %s",
+                                       skill.name, safety.reason)
+                        return
+                except ImportError:
+                    pass
+
                 skill.content = rewritten.strip()
                 skill.version += 1
                 skill.successes = 0

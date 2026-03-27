@@ -362,38 +362,55 @@ class TestMemoryHub:
 
     def test_deep_recall(self, tmp_path):
         hub = self._make_hub(tmp_path)
-        hub._msa_bridge.interleave_query.return_value = {"answer": "yes"}
-        hub._vector_store.search.return_value = [{"content": "x", "score": 0.5}]
-        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]):
+        hub._msa_bridge.interleave_query.return_value = {
+            "final_answer": "deep answer", "rounds": 2,
+            "total_docs_used": 3, "doc_ids_used": ["d1"],
+        }
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=[]):
             result = hub.deep_recall("complex question")
-        assert result["interleave"] == {"answer": "yes"}
-        assert len(result["memora_context"]) == 1
-        assert "skills" in result
+        assert result["interleave"]["final_answer"] == "deep answer"
+        assert "merged" in result
+        assert len(result["merged"]) >= 1
+        assert result["merged"][0]["system"] == "msa_interleave"
 
     def test_deep_recall_msa_exception(self, tmp_path):
         hub = self._make_hub(tmp_path)
         hub._msa_bridge.interleave_query.side_effect = Exception("fail")
-        hub._vector_store.search.return_value = []
-        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]):
-            result = hub.deep_recall("q")
+        result = hub.deep_recall("q")
         assert result["interleave"] is None
-
-    def test_deep_recall_memora_exception(self, tmp_path):
-        hub = self._make_hub(tmp_path)
-        hub._msa_bridge.interleave_query.return_value = {}
-        hub._vector_store.search.side_effect = Exception("fail")
-        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]):
-            result = hub.deep_recall("q")
-        assert result["memora_context"] == []
+        assert result["merged"] == []
 
     def test_deep_recall_with_skills(self, tmp_path):
         hub = self._make_hub(tmp_path)
-        hub._msa_bridge.interleave_query.return_value = {}
-        hub._vector_store.search.return_value = []
+        hub._msa_bridge.interleave_query.return_value = {
+            "final_answer": "answer", "rounds": 1,
+            "total_docs_used": 1, "doc_ids_used": ["d1"],
+        }
         mock_skills = [{"name": "Test Skill", "id": "s1", "content": "c"}]
-        with patch("memory_hub.MemoryHub._recall_skills", return_value=mock_skills):
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=mock_skills), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=[]):
             result = hub.deep_recall("q")
         assert len(result["skills"]) == 1
+        assert result["interleave"] is not None
+
+    def test_deep_recall_with_conflicts(self, tmp_path):
+        hub = self._make_hub(tmp_path)
+        hub._msa_bridge.interleave_query.return_value = {
+            "final_answer": "answer", "rounds": 1,
+            "total_docs_used": 1, "doc_ids_used": ["d1"],
+        }
+        mock_kg = [{
+            "edge_type": "contradicts",
+            "source_content": "A is true",
+            "target_content": "A is false",
+            "weight": 0.9, "relevance": 0.8,
+            "is_critical": True, "metadata": {},
+        }]
+        with patch("memory_hub.MemoryHub._recall_skills", return_value=[]), \
+             patch("memory_hub.MemoryHub._recall_kg", return_value=mock_kg):
+            result = hub.deep_recall("q")
+        assert len(result["contradictions"]) >= 1
 
     def test_status(self, tmp_path):
         hub = self._make_hub(tmp_path)
