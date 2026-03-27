@@ -7,6 +7,8 @@ import pytest
 import requests as req_lib
 import llm_client
 
+pytestmark = pytest.mark.real_llm
+
 
 def _reset():
     llm_client._resolved = None

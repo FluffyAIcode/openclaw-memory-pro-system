@@ -19,6 +19,7 @@ Usage log:   JSONL at memory/skills/usage_log.jsonl
 
 import json
 import logging
+import threading
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -193,6 +194,7 @@ class SkillRegistry:
         self._file = self._dir / "registry.jsonl"
         self._usage_log = self._dir / "usage_log.jsonl"
         self._skills: Optional[Dict[str, Skill]] = None
+        self._lock = threading.Lock()
 
     def _ensure_dir(self):
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -214,9 +216,10 @@ class SkillRegistry:
 
     def _save_all(self):
         self._ensure_dir()
-        with open(self._file, "w", encoding="utf-8") as f:
-            for s in self._load().values():
-                f.write(json.dumps(s.to_dict(), ensure_ascii=False) + "\n")
+        with self._lock:
+            with open(self._file, "w", encoding="utf-8") as f:
+                for s in self._load().values():
+                    f.write(json.dumps(s.to_dict(), ensure_ascii=False) + "\n")
 
     def add(self, name: str, content: str, *,
             tags: List[str] = None,
@@ -244,8 +247,9 @@ class SkillRegistry:
         skills = self._load()
         skills[skill.id] = skill
         self._ensure_dir()
-        with open(self._file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(skill.to_dict(), ensure_ascii=False) + "\n")
+        with self._lock:
+            with open(self._file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(skill.to_dict(), ensure_ascii=False) + "\n")
         logger.info("Skill registered: %s (%s)", skill.name, skill.id)
         return skill
 
@@ -346,8 +350,9 @@ class SkillRegistry:
             "timestamp": datetime.now().isoformat(),
         }
         try:
-            with open(self._usage_log, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            with self._lock:
+                with open(self._usage_log, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.warning("Failed to write usage log: %s", e)
 

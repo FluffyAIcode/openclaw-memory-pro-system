@@ -216,3 +216,27 @@ class TestKnowledgeGraph:
         assert tmp_kg.stats()["total_nodes"] == 0
         assert tmp_kg.get_decisions() == []
         assert tmp_kg.get_contradictions() == []
+
+    def test_has_lock(self, tmp_kg):
+        import threading
+        assert type(tmp_kg._lock) is type(threading.Lock())
+
+    def test_concurrent_add_nodes(self, tmp_kg):
+        import threading
+        from second_brain.knowledge_graph import KGNode, KGNodeType
+        errors = []
+
+        def add_node(i):
+            try:
+                tmp_kg.add_node(KGNode(f"concurrent node {i}", KGNodeType.FACT))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=add_node, args=(i,))
+                   for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        assert tmp_kg.stats()["total_nodes"] == 10

@@ -30,13 +30,39 @@ Ingest tags (intent):
 """
 
 import logging
+import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+try:
+    from typing import TypedDict
+except ImportError:
+    from typing_extensions import TypedDict
+
+
+class RecallData(TypedDict, total=False):
+    """Shared schema for the recall pipeline results dict.
+
+    Used by MemoryHub.recall() and ContextComposer.compose().
+    """
+    query: str
+    skills: List[dict]
+    kg_relations: List[dict]
+    evidence: List[dict]
+    memora: List[dict]
+    msa: List[dict]
+    contradictions: List[dict]
+    merged: List[dict]
+    intent: str
+    layers: dict
+    budget_stats: dict
+
 logger = logging.getLogger(__name__)
 
 _WORKSPACE = Path(__file__).parent
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 VALID_TAGS = {"thought", "share", "reference", "to_verify"}
 
@@ -60,11 +86,24 @@ class MemoryHub:
     """
 
     def __init__(self):
-        self._memora_bridge = None
+        self._vector_store = None
         self._chronos_bridge = None
         self._msa_bridge = None
         self._post_remember_hooks: list = []
         self._post_recall_hooks: list = []
+
+        self._post_remember_hooks.append(self._default_kg_hook)
+
+    @staticmethod
+    def _default_kg_hook(content: str, importance: float, results: dict = None):
+        """Base KG extraction hook — works without memory_server."""
+        if importance < 0.4:
+            return
+        try:
+            from second_brain.relation_extractor import extractor
+            extractor.extract(content, importance=importance)
+        except Exception as e:
+            logger.debug("KG extraction skipped: %s", e)
 
     def register_post_remember_hook(self, fn):
         """Register a callback: fn(content: str, importance: float, results: dict)"""
@@ -75,11 +114,11 @@ class MemoryHub:
         self._post_recall_hooks.append(fn)
 
     @property
-    def memora(self):
-        if self._memora_bridge is None:
-            from memora.bridge import bridge
-            self._memora_bridge = bridge
-        return self._memora_bridge
+    def vector_store(self):
+        if self._vector_store is None:
+            from memora.vectorstore import vector_store
+            self._vector_store = vector_store
+        return self._vector_store
 
     @property
     def chronos(self):
@@ -117,6 +156,10 @@ class MemoryHub:
             logger.warning("Unknown tag '%s', ignoring", tag)
             tag = None
 
+        content = _CONTROL_CHARS.sub("", content)
+        source = _CONTROL_CHARS.sub("", source)
+        timestamp = datetime.now().isoformat()
+
         word_count = max(len(content.split()), len(content) // 2)
         results = {"word_count": word_count, "systems_used": [], "tag": tag}
 
@@ -128,19 +171,18 @@ class MemoryHub:
         metadata = {
             "source": source,
             "importance": importance,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": timestamp,
         }
         if tag:
             metadata["tag"] = tag
 
         if "memora" in systems:
             try:
-                from memora.collector import collector
-                from memora.vectorstore import vector_store
-
-                entry = collector.collect(content, source=source, importance=importance)
-                vector_store.add(content, metadata=metadata)
-                results["memora"] = entry
+                self.vector_store.add(content, metadata=metadata)
+                results["memora"] = {
+                    "content": content, "source": source,
+                    "importance": importance, "timestamp": timestamp,
+                }
                 results["systems_used"].append("memora")
             except Exception as e:
                 logger.warning("Memora ingestion failed: %s", e)
@@ -215,30 +257,44 @@ class MemoryHub:
             "budget_stats": {},
         }
 
-        # ── Raw retrieval ─────────────────────────────────────────
-        results["skills"] = self._recall_skills(query)
-        results["kg_relations"] = self._recall_kg(query, min_score=min_score)
+        # ── Raw retrieval (parallel) ──────────────────────────────
+        def _fetch_memora():
+            try:
+                mrs = self.vector_store.search(
+                    query, limit=top_k, min_score=min_score)
+                for r in mrs:
+                    r["system"] = "memora"
+                return mrs
+            except Exception as e:
+                logger.warning("Memora recall failed: %s", e)
+                return []
 
-        try:
-            memora_results = self.memora.search_across(
-                query, include_msa=False, min_score=min_score)
-            for r in memora_results:
-                r["system"] = "memora"
-            results["memora"] = memora_results
-        except Exception as e:
-            logger.warning("Memora recall failed: %s", e)
+        def _fetch_msa():
+            try:
+                msa_result = self.msa.query_memory(query, top_k=min(top_k, 5))
+                out = []
+                for doc in msa_result.get("results", []):
+                    out.append({
+                        "content": "\n".join(doc["chunks"][:3]),
+                        "score": round(doc["score"], 4),
+                        "metadata": {"doc_id": doc["doc_id"], "title": doc["title"]},
+                        "system": "msa",
+                    })
+                return out
+            except Exception as e:
+                logger.warning("MSA recall failed: %s", e)
+                return []
 
-        try:
-            msa_result = self.msa.query_memory(query, top_k=min(top_k, 5))
-            for doc in msa_result.get("results", []):
-                results["msa"].append({
-                    "content": "\n".join(doc["chunks"][:3]),
-                    "score": round(doc["score"], 4),
-                    "metadata": {"doc_id": doc["doc_id"], "title": doc["title"]},
-                    "system": "msa",
-                })
-        except Exception as e:
-            logger.warning("MSA recall failed: %s", e)
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="recall") as pool:
+            f_skills = pool.submit(self._recall_skills, query)
+            f_kg = pool.submit(self._recall_kg, query, min_score)
+            f_memora = pool.submit(_fetch_memora)
+            f_msa = pool.submit(_fetch_msa)
+
+            results["skills"] = f_skills.result()
+            results["kg_relations"] = f_kg.result()
+            results["memora"] = f_memora.result()
+            results["msa"] = f_msa.result()
 
         # ── Rerank evidence ───────────────────────────────────────
         evidence = results["memora"] + results["msa"]
@@ -305,7 +361,7 @@ class MemoryHub:
             results["interleave"] = None
 
         try:
-            memora_results = self.memora.search_across(query, include_msa=False)
+            memora_results = self.vector_store.search(query, limit=5)
             results["memora_context"] = memora_results[:5]
         except Exception as e:
             results["memora_context"] = []
@@ -367,22 +423,13 @@ class MemoryHub:
 
     @staticmethod
     def _rerank(query: str, candidates: list) -> list:
-        """Stage 2: cross-encoder reranking over bi-encoder candidates.
-
-        Skills are excluded from reranking (always kept at top).
-        """
+        """Stage 2: cross-encoder reranking over bi-encoder candidates."""
         if len(candidates) <= 1:
-            return candidates
-
-        skills = [c for c in candidates if c.get("system") == "skill"]
-        non_skills = [c for c in candidates if c.get("system") != "skill"]
-
-        if not non_skills:
             return candidates
 
         try:
             from reranker import rerank
-            reranked = rerank(query, non_skills, content_key="content")
+            reranked = rerank(query, candidates, content_key="content")
             for item in reranked:
                 ce_score = item.get("rerank_score")
                 if ce_score is not None:
@@ -390,11 +437,10 @@ class MemoryHub:
                     ce_norm = max(min((ce_score + 10) / 20, 1.0), 0.0)
                     item["score"] = round(0.4 * bi_score + 0.6 * ce_norm, 4)
             reranked.sort(key=lambda x: x.get("score", 0), reverse=True)
+            return reranked
         except Exception as e:
             logger.debug("Reranker unavailable (%s), using bi-encoder order", e)
-            reranked = non_skills
-
-        return skills + reranked
+            return candidates
 
     @staticmethod
     def _trim_to_budget(merged: list, max_tokens: int) -> list:
@@ -582,8 +628,7 @@ class MemoryHub:
         st = {"systems": {}}
 
         try:
-            from memora.vectorstore import vector_store
-            st["systems"]["memora"] = {"entries": vector_store.count()}
+            st["systems"]["memora"] = {"entries": self.vector_store.count()}
         except Exception as e:
             st["systems"]["memora"] = {"error": str(e)}
 

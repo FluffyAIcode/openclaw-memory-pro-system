@@ -33,6 +33,9 @@ def _get_cross_encoder():
     return _cross_encoder
 
 
+get_cross_encoder = _get_cross_encoder
+
+
 def rerank(query: str, candidates: List[dict],
            content_key: str = "content",
            top_k: int = 0,

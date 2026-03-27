@@ -14,6 +14,7 @@ Persistence: memory/kg/nodes.jsonl + edges.jsonl
 
 import json
 import logging
+import threading
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -172,6 +173,7 @@ class KnowledgeGraph:
         self._graph = nx.DiGraph()
         self._nodes: Dict[str, KGNode] = {}
         self._loaded = False
+        self._lock = threading.Lock()
 
     def _ensure_loaded(self):
         if not self._loaded:
@@ -386,12 +388,14 @@ class KnowledgeGraph:
     # ── Persistence ──────────────────────────────────────────────
 
     def _append_node(self, node: KGNode):
-        with open(self._nodes_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(node.to_dict(), ensure_ascii=False) + "\n")
+        with self._lock:
+            with open(self._nodes_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(node.to_dict(), ensure_ascii=False) + "\n")
 
     def _append_edge(self, edge: KGEdge):
-        with open(self._edges_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(edge.to_dict(), ensure_ascii=False) + "\n")
+        with self._lock:
+            with open(self._edges_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(edge.to_dict(), ensure_ascii=False) + "\n")
 
     def load(self):
         """Load graph from JSONL files."""
@@ -437,21 +441,22 @@ class KnowledgeGraph:
     def save(self):
         """Full rewrite of both JSONL files (for compaction after edits)."""
         self._ensure_loaded()
-        with open(self._nodes_file, "w", encoding="utf-8") as f:
-            for node in self._nodes.values():
-                f.write(json.dumps(node.to_dict(), ensure_ascii=False) + "\n")
+        with self._lock:
+            with open(self._nodes_file, "w", encoding="utf-8") as f:
+                for node in self._nodes.values():
+                    f.write(json.dumps(node.to_dict(), ensure_ascii=False) + "\n")
 
-        with open(self._edges_file, "w", encoding="utf-8") as f:
-            for src, tgt, data in self._graph.edges(data=True):
-                edge_dict = {
-                    "source_id": src,
-                    "target_id": tgt,
-                    "edge_type": data.get("edge_type", ""),
-                    "weight": data.get("weight", 0.5),
-                    "created_at": data.get("created_at", ""),
-                    "evidence": data.get("evidence", ""),
-                }
-                f.write(json.dumps(edge_dict, ensure_ascii=False) + "\n")
+            with open(self._edges_file, "w", encoding="utf-8") as f:
+                for src, tgt, data in self._graph.edges(data=True):
+                    edge_dict = {
+                        "source_id": src,
+                        "target_id": tgt,
+                        "edge_type": data.get("edge_type", ""),
+                        "weight": data.get("weight", 0.5),
+                        "created_at": data.get("created_at", ""),
+                        "evidence": data.get("evidence", ""),
+                    }
+                    f.write(json.dumps(edge_dict, ensure_ascii=False) + "\n")
 
         logger.info("KG saved: %d nodes, %d edges",
                      len(self._nodes), self._graph.number_of_edges())

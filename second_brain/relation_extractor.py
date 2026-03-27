@@ -185,10 +185,15 @@ class RelationExtractor:
                 return self._fallback_candidates(content, all_nodes, top_k)
 
             import numpy as np
-            query_vec = np.array(emb.embed(content), dtype=np.float32)
+            embed_q = emb.embed_query if hasattr(emb, 'embed_query') else emb.embed
+            query_vec = np.array(embed_q(content), dtype=np.float32)
             scored = []
             for node in all_nodes:
-                node_vec = np.array(emb.embed(node.content), dtype=np.float32)
+                if node.embedding is not None:
+                    node_vec = np.array(node.embedding, dtype=np.float32)
+                else:
+                    embed_d = emb.embed_document if hasattr(emb, 'embed_document') else emb.embed
+                    node_vec = np.array(embed_d(node.content), dtype=np.float32)
                 sim = float(np.dot(query_vec, node_vec))
                 scored.append((sim, node))
             scored.sort(key=lambda x: x[0], reverse=True)

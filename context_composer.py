@@ -30,24 +30,14 @@ logger = logging.getLogger(__name__)
 
 # ── Stage 2: Relevance Gate ───────────────────────────────────────
 
-_cross_encoder_cache = {"loaded": False, "model": None}
-
 
 def _get_cross_encoder():
-    """Lazy-load cross-encoder for relevance verification."""
-    if _cross_encoder_cache["loaded"]:
-        return _cross_encoder_cache["model"]
-    _cross_encoder_cache["loaded"] = True
+    """Get the shared cross-encoder singleton from reranker module."""
     try:
-        from sentence_transformers import CrossEncoder
-        model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=256)
-        _cross_encoder_cache["model"] = model
-        logger.info("Context Composer: cross-encoder loaded for relevance gate")
-    except Exception as e:
-        logger.info("Context Composer: cross-encoder unavailable (%s), "
-                    "using n-gram fallback for relevance gate", e)
-        _cross_encoder_cache["model"] = None
-    return _cross_encoder_cache["model"]
+        from reranker import get_cross_encoder
+        return get_cross_encoder()
+    except ImportError:
+        return None
 
 
 def _has_cjk(text: str, threshold: float = 0.3) -> bool:
@@ -548,7 +538,7 @@ class ContextComposer:
         if gate_stats["rejected"] > 0:
             warnings.append(
                 f"Relevance gate rejected {gate_stats['rejected']} items "
-                f"(threshold={RELEVANCE_GATE_THRESHOLD})")
+                f"(threshold={gate_threshold})")
             logger.info(
                 "Relevance gate: passed=%d, rejected=%d for '%s'. "
                 "Rejected samples: %s",

@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -25,6 +26,7 @@ class VectorStore:
         self._entries: Optional[List[dict]] = None
         self._bm25 = None
         self._bm25_dirty = True
+        self._lock = threading.Lock()
 
     def _ensure_dir(self):
         self._db_path.mkdir(parents=True, exist_ok=True)
@@ -76,26 +78,27 @@ class VectorStore:
 
     def add(self, content: str, metadata: dict = None, dedup: bool = True):
         self._ensure_dir()
-        entries = self._load()
+        with self._lock:
+            entries = self._load()
 
-        if dedup and self.contains(content):
-            logger.debug("Skipped duplicate: %s", content[:60])
-            return
+            if dedup and self.contains(content):
+                logger.debug("Skipped duplicate: %s", content[:60])
+                return
 
-        vector = embedder.embed_document(content)
-        entry = {
-            "content": content,
-            "vector": vector,
-            "timestamp": datetime.now().isoformat(),
-            "metadata": metadata or {},
-        }
-        entries.append(entry)
-        self._bm25_dirty = True
+            vector = embedder.embed_document(content)
+            entry = {
+                "content": content,
+                "vector": vector,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": metadata or {},
+            }
+            entries.append(entry)
+            self._bm25_dirty = True
 
-        with open(self._index_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            with open(self._index_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-        logger.info("已存入向量库 (共 %d 条)", len(entries))
+            logger.info("已存入向量库 (共 %d 条)", len(entries))
 
     def search(self, query: str, limit: int = 8,
                min_score: float = 0.0) -> List[dict]:

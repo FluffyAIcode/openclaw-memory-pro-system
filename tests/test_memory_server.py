@@ -35,9 +35,17 @@ class TestLoadEnv:
 class TestLoadSharedEmbedder:
     """STUB: SentenceTransformer → FakeSentenceTransformer"""
 
-    def test_loads_successfully(self):
+    def test_loads_successfully(self, monkeypatch):
+        import numpy as np
         import shared_embedder
         shared_embedder._instance = None
+
+        fake_model = MagicMock()
+        fake_model.encode.return_value = np.random.randn(768).astype(np.float32)
+        fake_st_module = MagicMock()
+        fake_st_module.SentenceTransformer.return_value = fake_model
+        monkeypatch.setitem(sys.modules, "sentence_transformers", fake_st_module)
+
         import memory_server
         emb = memory_server._load_shared_embedder()
         assert emb is not None
@@ -189,17 +197,23 @@ class TestMemoryHandler:
 
     def test_add_endpoint(self):
         import memory_server
-        mock_collector = MagicMock()
-        mock_collector.collect.return_value = {"timestamp": "t", "content": "x"}
-        mock_vs = MagicMock()
-        with patch.dict(sys.modules, {
-            "memora.collector": MagicMock(collector=mock_collector),
-            "memora.vectorstore": MagicMock(vector_store=mock_vs)
-        }):
+        mock_hub = MagicMock()
+        mock_hub.remember.return_value = {
+            "word_count": 2, "systems_used": ["memora", "daily_file"],
+            "tag": None, "memora": {"content": "add this"},
+        }
+        orig_hub = memory_server._hub
+        orig_flag = memory_server._hub_hooks_registered
+        memory_server._hub = mock_hub
+        memory_server._hub_hooks_registered = True
+        try:
             body = json.dumps({"content": "add this"}).encode()
             handler, responses = self._make_handler("POST", "/add", body)
             memory_server.MemoryHandler.do_POST(handler)
             assert responses[0][0] == 200
+        finally:
+            memory_server._hub = orig_hub
+            memory_server._hub_hooks_registered = orig_flag
 
     def test_digest_endpoint(self):
         import memory_server
@@ -501,27 +515,20 @@ class TestAutoIngestor:
         ingestor._hashes_path = tmp_path / "memory" / "ingestion_hashes.json"
         ingestor._msa_state_path = tmp_path / "memory" / "msa_ingestion_state.json"
 
-        mock_collector_inst = MagicMock()
-        mock_collector_inst.collect.return_value = {"timestamp": "2026-03-21T10:00:00"}
         mock_vs_inst = MagicMock()
         mock_vs_inst.contains.return_value = False
 
         import importlib
-        mc_mod = importlib.import_module("memora.collector")
         vs_mod = importlib.import_module("memora.vectorstore")
-        orig_c = mc_mod.collector
         orig_v = vs_mod.vector_store
-        mc_mod.collector = mock_collector_inst
         vs_mod.vector_store = mock_vs_inst
         try:
             with patch.object(memory_server, "_kg_extract_async"):
                 ingestor.scan_and_ingest()
         finally:
-            mc_mod.collector = orig_c
             vs_mod.vector_store = orig_v
 
         assert mock_vs_inst.add.called
-        assert mock_collector_inst.collect.called
         assert ingestor._state.get("2026-03-21.md") is not None
         memory_server._WORKSPACE = old_ws
 

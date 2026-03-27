@@ -1,5 +1,4 @@
-"""Tests for memora/* — 100% coverage of config, embedder, collector,
-vectorstore, digest, distiller, bridge, zfs_integration."""
+"""Tests for memora/* — config, embedder, vectorstore, digest, zfs_integration."""
 
 import hashlib
 import json
@@ -174,61 +173,6 @@ class TestEmbedderProxy:
         assert emb is deterministic_embedder
         shared_embedder._instance = None
 
-
-# ═══════════════════════════════════════════════════════════
-# memora/collector.py
-# ═══════════════════════════════════════════════════════════
-
-class TestCollector:
-
-    def _get_collector_mod(self):
-        return sys.modules["memora.collector"]
-
-    def test_collect_writes_daily_file(self, tmp_path):
-        from memora.config import MemoraConfig
-        cfg = MemoraConfig(base_dir=tmp_path)
-        cfg.ensure_dirs()
-
-        from memora.collector import MemoraCollector
-        cmod = self._get_collector_mod()
-        orig_cfg = cmod.config
-        cmod.config = cfg
-        try:
-            c = MemoraCollector()
-            entry = c.collect("test content", source="unit_test", importance=0.8)
-        finally:
-            cmod.config = orig_cfg
-
-        assert entry["content"] == "test content"
-        assert entry["source"] == "unit_test"
-        assert entry["importance"] == 0.8
-        assert "timestamp" in entry
-        daily_files = list(cfg.daily_dir.glob("*.md"))
-        assert len(daily_files) >= 1
-
-    def test_sanitize_control_chars(self):
-        from memora.collector import _sanitize
-        assert _sanitize("hello\x00world") == "helloworld"
-        assert _sanitize("normal") == "normal"
-
-    def test_truncate(self):
-        from memora.collector import _truncate
-        assert _truncate("short", 60) == "short"
-        assert _truncate("a" * 100, 60).endswith("...")
-
-    def test_module_level_collect(self, tmp_path):
-        from memora.config import MemoraConfig
-        cfg = MemoraConfig(base_dir=tmp_path)
-        cfg.ensure_dirs()
-        cmod = self._get_collector_mod()
-        orig_cfg = cmod.config
-        cmod.config = cfg
-        try:
-            from memora.collector import collect
-            entry = collect("test", source="x")
-            assert entry["source"] == "x"
-        finally:
-            cmod.config = orig_cfg
 
 
 # ═══════════════════════════════════════════════════════════
@@ -439,109 +383,6 @@ class TestDigest:
 
 
 # ═══════════════════════════════════════════════════════════
-# memora/bridge.py
-# ═══════════════════════════════════════════════════════════
-
-class TestMemoraBridge:
-
-    def test_save_to_both(self, tmp_path, monkeypatch, deterministic_embedder):
-        monkeypatch.setenv("MEMORA_BASE_DIR", str(tmp_path))
-        import memora.config as mc
-        mc._config_cache = None
-        from memora.bridge import MemoraBridge
-        with patch("memora.vectorstore.embedder", deterministic_embedder), \
-             patch("memora.bridge.vector_store") as mvs, \
-             patch("memora.bridge.collector") as mcoll:
-            mcoll.collect.return_value = {"timestamp": "t", "content": "c",
-                                          "source": "s", "importance": 0.7}
-            b = MemoraBridge(memory_dir=tmp_path)
-            entry = b.save_to_both("test", source="ut", importance=0.5)
-            mcoll.collect.assert_called_once()
-            mvs.add.assert_called_once()
-        mc._config_cache = None
-
-    def test_save_to_both_chronos_forwarding(self, tmp_path, monkeypatch):
-        import memora.config as mc
-        mc._config_cache = None
-        from memora.bridge import MemoraBridge
-        with patch("memora.bridge.collector") as mcoll, \
-             patch("memora.bridge.vector_store"):
-            mcoll.collect.return_value = {"timestamp": "t", "content": "c",
-                                          "source": "s", "importance": 0.9}
-            with patch("chronos.bridge.bridge") as chrono_mock:
-                b = MemoraBridge(memory_dir=tmp_path)
-                b.save_to_both("important", importance=0.9)
-                chrono_mock.learn_and_save.assert_called_once()
-        mc._config_cache = None
-
-    def test_save_to_both_msa_forwarding(self, tmp_path, monkeypatch):
-        import memora.config as mc
-        mc._config_cache = None
-        from memora.bridge import MemoraBridge
-        long_text = " ".join(["word"] * 150)
-        with patch("memora.bridge.collector") as mcoll, \
-             patch("memora.bridge.vector_store"):
-            mcoll.collect.return_value = {"timestamp": "t", "content": long_text,
-                                          "source": "s", "importance": 0.5}
-            with patch("msa.bridge.bridge") as msa_mock:
-                b = MemoraBridge(memory_dir=tmp_path)
-                b.save_to_both(long_text, importance=0.5)
-                msa_mock.ingest_and_save.assert_called_once()
-        mc._config_cache = None
-
-    def test_save_chronos_exception(self, tmp_path):
-        from memora.bridge import MemoraBridge
-        with patch("memora.bridge.collector") as mcoll, \
-             patch("memora.bridge.vector_store"):
-            mcoll.collect.return_value = {"timestamp": "t", "content": "c",
-                                          "source": "s", "importance": 0.9}
-            with patch("chronos.bridge.bridge") as cm:
-                cm.learn_and_save.side_effect = Exception("fail")
-                b = MemoraBridge(memory_dir=tmp_path)
-                entry = b.save_to_both("test", importance=0.9)
-                assert entry is not None
-
-    def test_search_across(self, tmp_path, deterministic_embedder):
-        from memora.bridge import MemoraBridge
-        with patch("memora.bridge.vector_store") as mvs:
-            mvs.search.return_value = [{"content": "x", "score": 0.9, "timestamp": "t"}]
-            b = MemoraBridge(memory_dir=tmp_path)
-            results = b.search_across("query", include_msa=False)
-            assert len(results) == 1
-
-    def test_search_across_with_msa(self, tmp_path):
-        from memora.bridge import MemoraBridge
-        with patch("memora.bridge.vector_store") as mvs, \
-             patch("msa.bridge.bridge") as msa_mock:
-            mvs.search.return_value = []
-            msa_mock.query_memory.return_value = {
-                "results": [{"chunks": ["c1", "c2"], "score": 0.8,
-                             "doc_id": "d1", "title": "T"}]
-            }
-            b = MemoraBridge(memory_dir=tmp_path)
-            results = b.search_across("query", include_msa=True)
-            assert len(results) == 1
-            assert results[0]["metadata"]["source"] == "msa"
-
-    def test_search_msa_exception(self, tmp_path):
-        from memora.bridge import MemoraBridge
-        with patch("memora.bridge.vector_store") as mvs, \
-             patch("msa.bridge.bridge") as msa_mock:
-            mvs.search.return_value = [{"content": "x", "score": 0.5}]
-            msa_mock.query_memory.side_effect = Exception("msa fail")
-            b = MemoraBridge(memory_dir=tmp_path)
-            results = b.search_across("query", include_msa=True)
-            assert len(results) == 1
-
-    def test_auto_digest(self, tmp_path):
-        from memora.bridge import MemoraBridge
-        with patch("memora.bridge.digest_memories") as md:
-            b = MemoraBridge(memory_dir=tmp_path)
-            b.auto_digest()
-            md.assert_called_once()
-
-
-# ═══════════════════════════════════════════════════════════
 # memora/zfs_integration.py
 # ═══════════════════════════════════════════════════════════
 
@@ -608,3 +449,40 @@ class TestZFSIntegration:
         with patch("memora.zfs_integration.subprocess.run",
                    side_effect=OSError("oops")):
             assert z.create_snapshot() is False
+
+
+class TestVectorStoreLock:
+    """Verify VectorStore uses a threading lock for concurrent writes."""
+
+    def test_has_lock(self, tmp_path):
+        import threading
+        from memora.vectorstore import VectorStore
+        vs = VectorStore(db_path=tmp_path)
+        assert type(vs._lock) is type(threading.Lock())
+
+    def test_concurrent_add_no_corruption(self, tmp_path, deterministic_embedder):
+        import threading
+        from memora.vectorstore import VectorStore
+        from memora.embedder import embedder as emb_proxy
+        orig = emb_proxy._instance
+        emb_proxy._instance = deterministic_embedder
+        try:
+            vs = VectorStore(db_path=tmp_path)
+            errors = []
+
+            def add_entry(i):
+                try:
+                    vs.add(f"concurrent entry {i}", dedup=False)
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=add_entry, args=(i,))
+                       for i in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert not errors
+            assert vs.count() == 10
+        finally:
+            emb_proxy._instance = orig

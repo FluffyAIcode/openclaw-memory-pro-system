@@ -16,6 +16,10 @@ setup(
         "networkx>=3.0",
     ],
     extras_require={
+        "dev": [
+            "pytest>=7.0",
+            "pytest-cov>=4.0",
+        ],
         "chronos": [
             "torch>=2.0.0",
         ],
