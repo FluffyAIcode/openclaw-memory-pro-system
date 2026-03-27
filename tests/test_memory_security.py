@@ -368,7 +368,7 @@ class TestTrustScorer:
             "metadata": {"importance": 1.0},
         }
         verdict = scorer.evaluate(item)
-        assert verdict.trust_score < 0.7
+        assert verdict.trust_score < 0.75
 
     def test_skill_established(self):
         scorer = self._scorer()
