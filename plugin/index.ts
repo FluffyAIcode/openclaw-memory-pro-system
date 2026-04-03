@@ -1,15 +1,20 @@
 /**
- * OpenClaw Gateway Plugin — Memory Pro System v0.0.7
+ * OpenClaw Gateway Plugin — Memory Pro System
  *
  * Provides agent tools, a background service managing the Python memory server,
  * a before_prompt_build hook for automatic memory injection, and HTTP status routes.
+ *
+ * Version is read from package.json at load time — never hardcode it here.
  */
 
 import { spawn, ChildProcess } from "child_process";
 import { resolve, dirname } from "path";
 import { existsSync, readFileSync } from "fs";
 import { IncomingMessage, ServerResponse } from "http";
-// Tool parameters use plain JSON Schema (TypeBox compatible)
+
+const PKG = JSON.parse(
+  readFileSync(resolve(dirname(__filename), "package.json"), "utf-8"),
+) as { name: string; version: string };
 
 // ---------------------------------------------------------------------------
 // Config shape (mirrors openclaw.plugin.json configSchema)
@@ -152,7 +157,7 @@ async function toolExec(
 
 export const id = "memory-pro";
 export const name = "Memory Pro System";
-export const version = "0.0.7";
+export const version = PKG.version;
 export const description =
   "Enhanced AI memory — vector store, MSA, KG, collision engine, executable skills.";
 
@@ -160,7 +165,7 @@ export async function register(api: any): Promise<void> {
   const logger = api.logger;
   const cfg = resolvedConfig(api.pluginConfig);
 
-  logger.info(`Memory Pro plugin v0.0.7 — registering... (contextInjection=${cfg.contextInjection}, maxTokens=${cfg.contextMaxTokens})`);
+  logger.info(`Memory Pro plugin v${version} — registering... (contextInjection=${cfg.contextInjection}, maxTokens=${cfg.contextMaxTokens})`);
 
   // -----------------------------------------------------------------------
   // 1. Background service: spawn/manage memory_server.py
@@ -456,7 +461,7 @@ export async function register(api: any): Promise<void> {
       try {
         const data = await memoryGet(cfg, "/health");
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ plugin: "memory-pro", version: "0.0.7", server: data }));
+        res.end(JSON.stringify({ plugin: "memory-pro", version, server: data }));
       } catch (e) {
         res.writeHead(502, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ plugin: "memory-pro", error: "Memory server unreachable", detail: String(e) }));
@@ -471,7 +476,7 @@ export async function register(api: any): Promise<void> {
       try {
         const data = await memoryGet(cfg, "/status");
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ plugin: "memory-pro", version: "0.0.7", status: data }));
+        res.end(JSON.stringify({ plugin: "memory-pro", version, status: data }));
       } catch (e) {
         res.writeHead(502, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ plugin: "memory-pro", error: "Memory server unreachable", detail: String(e) }));
