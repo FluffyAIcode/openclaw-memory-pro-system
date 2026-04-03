@@ -1645,6 +1645,52 @@ def _daemonize(pid_file: Path, log_dir: Path):
     pid_file.write_text(str(os.getpid()))
 
 
+def _kill_stale_server(pid_file: Path, port: int) -> None:
+    """Kill any leftover server process that would block the port."""
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            if old_pid == os.getpid():
+                return  # PID file was written by _daemonize for this process
+            os.kill(old_pid, 0)  # check if alive
+            logger.info("Stale server found (PID %d) — sending SIGTERM", old_pid)
+            os.kill(old_pid, signal.SIGTERM)
+            for _ in range(20):  # wait up to 2s
+                time.sleep(0.1)
+                try:
+                    os.kill(old_pid, 0)
+                except OSError:
+                    break
+            else:
+                logger.warning("Stale server PID %d did not exit — sending SIGKILL", old_pid)
+                try:
+                    os.kill(old_pid, signal.SIGKILL)
+                    time.sleep(0.3)
+                except OSError:
+                    pass
+            logger.info("Stale server removed")
+        except (ValueError, OSError):
+            pass
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
+
+    # Double-check: try to connect to the port; if something answers, bail.
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(0.5)
+        sock.connect(("127.0.0.1", port))
+        sock.close()
+        logger.error("Port %d still occupied by unknown process — cannot start", port)
+        sys.exit(1)
+    except (ConnectionRefusedError, OSError):
+        pass  # port free — good
+    finally:
+        sock.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="OpenClaw Memory Server")
     parser.add_argument("--port", type=int, default=18790, help="Listen port")
@@ -1666,15 +1712,25 @@ def main():
         _daemonize(pid_file, log_dir)
         _force_cpu_for_daemon()
 
+    # Clean up stale server before binding.
+    _kill_stale_server(pid_file, args.port)
+
     _server_ref = None
 
     def _shutdown(signum, frame):
         logger.info("Shutting down (signal %s)...", signum)
+        # Avoid deadlock: shutdown() waits for serve_forever() to return,
+        # but we're in the same thread.  Use a helper thread instead.
         if _server_ref is not None:
-            _server_ref.shutdown()
+            threading.Thread(target=_server_ref.shutdown, daemon=True).start()
         if pid_file.exists():
-            pid_file.unlink()
-        sys.exit(0)
+            try:
+                pid_file.unlink()
+            except OSError:
+                pass
+        # Give the server thread a moment to close the socket, then exit.
+        time.sleep(0.3)
+        os._exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
@@ -1706,7 +1762,20 @@ def main():
     scheduler = Scheduler(_telegram)
     scheduler.start()
 
-    server = ThreadedServer((args.host, args.port), MemoryHandler)
+    for attempt in range(5):
+        try:
+            server = ThreadedServer((args.host, args.port), MemoryHandler)
+            break
+        except OSError as e:
+            if attempt < 4:
+                wait = (attempt + 1) * 2
+                logger.warning("Port %d busy (%s) — retrying in %ds (%d/5)",
+                               args.port, e, wait, attempt + 1)
+                time.sleep(wait)
+            else:
+                logger.error("Cannot bind to %s:%d after 5 attempts — exiting",
+                             args.host, args.port)
+                sys.exit(1)
     _server_ref = server
     logger.info("Memory Server listening on %s:%d (PID %d)",
                 args.host, args.port, os.getpid())

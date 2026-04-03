@@ -9,6 +9,7 @@ Falls back to pass-through if cross-encoder is unavailable.
 """
 
 import logging
+import os
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,9 @@ def _get_cross_encoder():
     _cross_encoder_loaded = True
     try:
         from sentence_transformers import CrossEncoder
-        model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
+        device = "cpu" if os.environ.get("PYTORCH_MPS_ENABLED") == "0" else None
+        model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512,
+                             device=device)
         _cross_encoder = model
         logger.info("CrossEncoder loaded: cross-encoder/ms-marco-MiniLM-L-6-v2")
     except Exception as e:

@@ -17,11 +17,36 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 _BASE_URL = "http://127.0.0.1:18790"
-_WORKSPACE = Path(__file__).parent
+_WORKSPACE = Path(__file__).resolve().parent
+_auth_token: Optional[str] = None
+
+
+def _load_auth_token() -> str:
+    global _auth_token
+    if _auth_token is not None:
+        return _auth_token
+    token_path = _WORKSPACE / "memory" / "security" / ".auth_token"
+    try:
+        if token_path.exists():
+            _auth_token = token_path.read_text().strip()
+            return _auth_token
+    except OSError:
+        pass
+    _auth_token = ""
+    return _auth_token
+
+
+def _auth_headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+    token = _load_auth_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _post(path: str, data: dict, timeout: int = 120) -> dict:
@@ -29,28 +54,42 @@ def _post(path: str, data: dict, timeout: int = 120) -> dict:
     req = Request(
         f"{_BASE_URL}{path}",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_auth_headers(),
         method="POST",
     )
     try:
         with urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except URLError as e:
-        print(f"\n  连接失败: Memory Server 未响应", file=sys.stderr)
-        print(f"  请先启动: memory-cli server-start", file=sys.stderr)
-        print(f"  然后等待约 3 分钟加载模型，再运行: memory-cli health\n", file=sys.stderr)
+        if hasattr(e, "code") and e.code == 401:
+            print("\n  认证失败: auth token 无效或缺失", file=sys.stderr)
+            print(f"  检查: {_WORKSPACE / 'memory/security/.auth_token'}\n",
+                  file=sys.stderr)
+        else:
+            print("\n  连接失败: Memory Server 未响应", file=sys.stderr)
+            print("  请先启动: memory-cli server-start", file=sys.stderr)
+            print("  然后等待约 3 分钟加载模型，再运行: memory-cli health\n",
+                  file=sys.stderr)
         sys.exit(1)
 
 
 def _get(path: str, timeout: int = 30) -> dict:
-    req = Request(f"{_BASE_URL}{path}", method="GET")
+    hdrs = _auth_headers()
+    hdrs.pop("Content-Type", None)
+    req = Request(f"{_BASE_URL}{path}", headers=hdrs, method="GET")
     try:
         with urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except URLError as e:
-        print(f"\n  连接失败: Memory Server 未响应", file=sys.stderr)
-        print(f"  请先启动: memory-cli server-start", file=sys.stderr)
-        print(f"  然后等待约 3 分钟加载模型，再运行: memory-cli health\n", file=sys.stderr)
+        if hasattr(e, "code") and e.code == 401:
+            print("\n  认证失败: auth token 无效或缺失", file=sys.stderr)
+            print(f"  检查: {_WORKSPACE / 'memory/security/.auth_token'}\n",
+                  file=sys.stderr)
+        else:
+            print("\n  连接失败: Memory Server 未响应", file=sys.stderr)
+            print("  请先启动: memory-cli server-start", file=sys.stderr)
+            print("  然后等待约 3 分钟加载模型，再运行: memory-cli health\n",
+                  file=sys.stderr)
         sys.exit(1)
 
 
