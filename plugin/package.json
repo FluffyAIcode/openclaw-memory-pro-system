@@ -1,6 +1,6 @@
 {
   "name": "memory-pro",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "OpenClaw Gateway plugin — enhanced AI memory with vector store, document-level MSA, knowledge graph, collision engine, and executable skills.",
   "type": "module",
   "main": "index.ts",

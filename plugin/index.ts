@@ -45,6 +45,8 @@ const DEFAULTS: Required<MemoryProConfig> = {
 let serverProcess: ChildProcess | null = null;
 let serverReady = false;
 let authToken: string | null = null;
+let authTokenLoadedAt = 0;
+const AUTH_TOKEN_RETRY_MS = 30_000;
 
 function resolvedConfig(pluginConfig?: Record<string, unknown>): Required<MemoryProConfig> {
   const raw = pluginConfig ?? {};
@@ -64,22 +66,28 @@ function workspaceDir(cfg: Required<MemoryProConfig>): string {
 }
 
 // ---------------------------------------------------------------------------
-// Auth token
+// Auth token — retries on failure instead of caching empty permanently
 // ---------------------------------------------------------------------------
 
 function loadAuthToken(cfg: Required<MemoryProConfig>): string | null {
-  if (authToken !== null) return authToken || null;
+  if (authToken) return authToken;
+  if (authToken === "" && Date.now() - authTokenLoadedAt < AUTH_TOKEN_RETRY_MS) {
+    return null;
+  }
+
   const wsDir = workspaceDir(cfg);
   const tokenPath = resolve(wsDir, "memory", "security", ".auth_token");
   try {
     if (existsSync(tokenPath)) {
       authToken = readFileSync(tokenPath, "utf-8").trim();
+      authTokenLoadedAt = Date.now();
       return authToken || null;
     }
   } catch {
     // token file not readable — fall through
   }
   authToken = "";
+  authTokenLoadedAt = Date.now();
   return null;
 }
 
@@ -234,6 +242,32 @@ export async function register(api: any): Promise<void> {
 
       if (serverReady) {
         logger.info("Memory server is ready.");
+
+        // ── Startup self-test: verify auth + write pipeline ──
+        const hdrs = authHeaders(cfg);
+        const hasAuth = !!hdrs["Authorization"];
+        if (!hasAuth) {
+          logger.error(
+            "SELF-TEST FAILED: auth token not loaded — all tool calls will return 401. " +
+            "Check memory/security/.auth_token exists and is readable."
+          );
+        } else {
+          try {
+            const probe = await fetch(`${baseUrl(cfg)}/status`, { headers: hdrs });
+            if (probe.status === 401) {
+              logger.error(
+                "SELF-TEST FAILED: server rejected auth token (401). " +
+                "Token mismatch between plugin and server — restart gateway or regenerate token."
+              );
+            } else if (probe.ok) {
+              logger.info("Self-test passed: auth OK, server responsive.");
+            } else {
+              logger.warn(`Self-test warning: /status returned ${probe.status}`);
+            }
+          } catch (e) {
+            logger.warn(`Self-test: could not reach /status — ${e}`);
+          }
+        }
       } else {
         logger.warn("Memory server did not become ready within 60s.");
       }

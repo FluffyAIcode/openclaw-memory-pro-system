@@ -1,7 +1,7 @@
 {
   "id": "memory-pro",
   "name": "Memory Pro System",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "Enhanced AI memory — vector store, document-level MSA, KG, collision engine, executable skills, and closed-loop skill evolution.",
   "entry": "index.ts",
   "configSchema": {

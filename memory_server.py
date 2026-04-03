@@ -1290,6 +1290,7 @@ class MemoryHandler(BaseHTTPRequestHandler):
 
     def _handle_post(self):
         if self.path not in _AUTH_EXEMPT_PATHS and not _check_auth(self.headers):
+            logger.warning("Auth rejected: %s (from %s)", self.path, self.client_address[0])
             self._respond(401, {"error": "unauthorized"})
             return
 
@@ -1345,6 +1346,7 @@ class MemoryHandler(BaseHTTPRequestHandler):
 
     def _handle_get(self):
         if self.path not in _AUTH_EXEMPT_PATHS and not _check_auth(self.headers):
+            logger.warning("Auth rejected: %s (from %s)", self.path, self.client_address[0])
             self._respond(401, {"error": "unauthorized"})
             return
 

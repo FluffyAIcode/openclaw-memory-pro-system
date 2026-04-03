@@ -31,6 +31,7 @@ Ingest tags (intent):
 
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -245,11 +246,15 @@ class MemoryHub:
         logger.info("Memory Hub: remembered %d words via %s (tag=%s)",
                      word_count, ", ".join(results["systems_used"]), tag)
 
-        for hook in self._post_remember_hooks:
-            try:
-                hook(content, importance, results)
-            except Exception as e:
-                logger.warning("Post-remember hook failed: %s", e)
+        if self._post_remember_hooks:
+            def _run_hooks():
+                for hook in self._post_remember_hooks:
+                    try:
+                        hook(content, importance, results)
+                    except Exception as e:
+                        logger.warning("Post-remember hook failed: %s", e)
+            threading.Thread(target=_run_hooks, daemon=True,
+                             name="post-remember-hooks").start()
 
         return results
 
