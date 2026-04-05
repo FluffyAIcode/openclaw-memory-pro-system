@@ -348,33 +348,285 @@ text = f"{skill.name} {skill.content[:500]} {skill.applicable_scenarios}"
 
 ---
 
-## 5. 改进建议路线图
+## 5. LongMemEval Recall 管线改进方案（P0~P5）
 
-### 第一优先级：修复 Critical/High（v0.0.11，影响生产安全和核心功能）
+Extended Benchmark 的问题主要影响内部模块的正确性，而 LongMemEval 38.6% 的得分暴露的是 **recall 管线的系统性短板**。以下 6 项改进按投入产出比排序：
 
-| 修改项 | 文件 | 行数 | 预估工作量 |
+### P0 — 时间戳感知的检索排序（预计 Knowledge Update +25pp，Temporal +10pp）
+
+**问题根因**：`context_composer.py` 的 Quality Gate 虽然有 `_recency_score()` 衰减（第 265 行），但 recency 权重仅 0.15~0.3。当同一主题有新旧两条记忆时（如"我在 A 公司工作" vs "我跳槽到 B 公司"），分数相近，LLM 无法区分哪个是最新的。
+
+**修改方案（两个改动点）**：
+
+1) `context_composer.py` — `score_item()` 增加 update 语义信号检测：
+
+```python
+# context_composer.py — score_item() 增强
+def score_item(item: dict, query_intent: str) -> float:
+    relevance = item.get("score", 0.0)
+    timestamp = item.get("timestamp", "")
+    recency = _recency_score(timestamp)
+    importance = item.get("metadata", {}).get("importance", 0.5)
+
+    # ← 新增：检测 update 语义信号，给"更新类"记忆额外加分
+    update_signals = ['换了', '改成', '更新', '不再', '现在', '搬到', '跳槽',
+                      'changed', 'updated', 'now', 'switched', 'moved to',
+                      'instead', 'actually', 'no longer']
+    content = item.get("content", "").lower()
+    update_bonus = 0.1 if any(s in content for s in update_signals) else 0.0
+
+    # 原有权重计算 ...
+    composite = w_rel * relevance + w_rec * recency + w_imp * importance
+    return round(composite + update_bonus, 4)
+```
+
+2) `context_composer.py` — `_build_core_layer()` 输出中显式标注时间戳，让 LLM 能看到时序：
+
+```python
+# context_composer.py — _build_core_layer()，evidence 格式化时注入时间戳前缀
+for ev in scored_evidence:
+    ts = ev.get("timestamp", "")[:10]  # 取日期部分
+    content = ev["content"]
+    if ts:
+        ev["content"] = f"[{ts}] {content}"  # ← 让 LLM 看到时序
+```
+
+**涉及文件**：`context_composer.py` 第 285~315 行、第 616~637 行
+**预估工作量**：1~2 小时
+
+---
+
+### P1 — 聚合查询的 Multi-hop Recall（预计 Multi-Session +15pp）
+
+**问题根因**：问 "How many model kits have I worked on?" 时，向量检索只返回与 "model kits" 语义最近的 `top_k=8` 条记忆，但用户在 5 个不同会话中分别提到了 5 个不同的模型。`top_k=8` 可能只覆盖 3 个会话。
+
+**修改方案**：
+
+```python
+# memory_hub.py — recall() 方法增强
+def recall(self, query, top_k=8, ...):
+    # ← 新增：检测聚合类查询
+    agg_patterns = [
+        r'how many', r'how much', r'list all', r'what are all',
+        r'everything .* about', r'all .* (i|my)',
+        r'有多少', r'列出所有', r'哪些', r'都有什么',
+    ]
+    is_aggregation = any(re.search(p, query.lower()) for p in agg_patterns)
+
+    if is_aggregation:
+        # 扩大检索范围，再用 MMR 确保多样性（覆盖不同会话实例）
+        expanded = self._vector_search(query, top_k=top_k * 3)
+        results = self._diverse_selection(expanded, target=top_k)
+    else:
+        results = self._vector_search(query, top_k=top_k)
+```
+
+核心思路：聚合查询自动 3x `top_k`，然后用 MMR（已有于 `context_composer.py` 的 `_mmr_select`）去重选择，确保结果多样性而非纯相关性。
+
+**涉及文件**：`memory_hub.py` 第 262~280 行
+**预估工作量**：3~5 小时（含单元测试）
+
+---
+
+### P2 — Recall 上下文中注入结构化时间线（预计 Temporal +12pp，Knowledge Update +8pp）
+
+**问题根因**：当前上下文是扁平文本，LLM 难以进行时间推理（"最近一次"、"多少天前"、"first time"）。
+
+**修改方案**：在 Context Composer 的 `compose()` 输出前，检测时序类查询并注入时间线摘要：
+
+```python
+# context_composer.py — 新增 _inject_timeline()，在 compose() 最终输出前调用
+def _inject_timeline(self, merged: list, query: str) -> list:
+    """For temporal queries, prepend a chronological timeline summary."""
+    temporal_signals = ['when', 'last time', 'first time', 'how long',
+                        'how many days', 'before', 'after', 'recently',
+                        '什么时候', '多久', '最近', '上次', '第一次']
+    if not any(s in query.lower() for s in temporal_signals):
+        return merged
+
+    # 按时间排序，构建时间线摘要
+    time_entries = [m for m in merged if m.get("timestamp")]
+    time_entries.sort(key=lambda e: e.get("timestamp", ""))
+
+    timeline = "📅 Timeline (chronological):\n"
+    for e in time_entries:
+        date = e.get("timestamp", "")[:10]
+        summary = e["content"][:80]
+        timeline += f"  {date}: {summary}...\n"
+
+    timeline_item = {
+        "content": timeline,
+        "score": 1.0, "composite_score": 1.0,
+        "system": "timeline", "layer": "core",
+    }
+    return [timeline_item] + merged
+```
+
+这让 LLM 在回答时序问题时能看到清晰的时间轴。
+
+**涉及文件**：`context_composer.py`，新增 ~30 行
+**预估工作量**：1~2 小时
+
+---
+
+### P3 — 偏好/个性标签提取（预计 Preference +20pp）
+
+**问题根因**：用户偏好散落在对话中（如 "I really love spicy food"），当问 "Can you suggest a restaurant?" 时，"restaurant recommendation" 与 "spicy food preference" 的向量距离较远，偏好记忆不会被检索到。
+
+**修改方案**：在 Chronos（个性学习模块）中增强偏好提取：
+
+```python
+# chronos/learner.py — 新增偏好模式匹配
+PREFERENCE_PATTERNS = [
+    (r"i (love|like|prefer|enjoy|am into)\s+(.+)", "positive"),
+    (r"i (hate|dislike|don't like|avoid)\s+(.+)", "negative"),
+    (r"my favorite (.+) is (.+)", "favorite"),
+    (r"i always (.+)", "habit"),
+    (r"我(喜欢|爱|偏好|习惯)\s*(.+)", "positive"),
+    (r"我(讨厌|不喜欢|避免|不想)\s*(.+)", "negative"),
+]
+
+def extract_preferences(content: str) -> list:
+    """Extract structured preferences and store as tagged metadata."""
+    prefs = []
+    for pattern, ptype in PREFERENCE_PATTERNS:
+        match = re.search(pattern, content, re.IGNORECASE)
+        if match:
+            prefs.append({"type": ptype, "value": match.group(2).strip(),
+                          "raw": content[:200]})
+    return prefs
+```
+
+然后在 `context_composer.py` 的 L1 层中，当查询涉及建议/推荐时，主动注入相关偏好标签：
+
+```python
+# context_composer.py — _build_core_layer()
+# 当 intent == "suggestion" 或查询包含推荐/建议语义时：
+if intent in ("suggestion", "planning"):
+    from chronos.learner import get_relevant_preferences
+    prefs = get_relevant_preferences(query)
+    for p in prefs[:3]:
+        items.append({"content": f"[偏好] {p['type']}: {p['value']}",
+                       "score": 0.8, "system": "chronos", "layer": "core"})
+```
+
+**涉及文件**：`chronos/learner.py`（新增 ~40 行）+ `context_composer.py`（~15 行）
+**预估工作量**：1~2 周（含 Chronos 子系统改动）
+
+---
+
+### P4 — KG 关系在 Recall 中的实际启用（预计 Multi-Session +8pp）
+
+**Benchmark 发现**：E2E-11 报告 `kg_rels=0`，KG Relations 命中数为 0，Second Brain 的知识图谱在 recall 中实际未被使用。
+
+**原因分析**：
+- Benchmark 通过 `/add`（`skip_hooks=True`）写入，跳过了 KG 抽取 — 这是 benchmark 本身的局限
+- 但即使在真实使用中，也需确认 KG 关系是否真正参与了 recall pipeline
+
+**行动项（3 步验证+修复）**：
+
+```python
+# 1. 验证：context_composer.py — _build_concept_layer() 中 KG 查询是否被调用
+#    在第 647~689 行增加 debug logging：
+logger.debug("KG query for '%s': found %d relations", query, len(kg_relations))
+
+# 2. 修复：确保 KG 抽取的 entity-relation-entity 三元组能匹配 recall 查询
+#    second_brain/knowledge_graph.py — get_related_nodes() 需要用 embedding 匹配
+#    而不是纯字符串匹配
+
+# 3. 增强：对 "How many X" 类聚合查询，KG 可直接提供完整列表
+#    例如 KG 中有 (user)-[has]->(model_kit_1), (user)-[has]->(model_kit_2)...
+#    context_composer 的 L2 层直接列出所有 has 关系的 target 节点
+```
+
+**涉及文件**：`context_composer.py` L2 层 + `second_brain/knowledge_graph.py`
+**预估工作量**：3~5 小时
+
+---
+
+### P5 — Answer Prompt 优化（预计全局 +5pp）
+
+**问题根因**：`longmemeval_bench.py` 中生成答案的 prompt 过于简单，没有引导 LLM 正确使用记忆上下文。
+
+**修改方案**：
+
+```python
+# benchmarks/longmemeval_bench.py — _generate_answer() 中的 prompt 改进
+# 原有：
+#   system = "You are a helpful assistant with access to the user's memory."
+#   prompt = f"Memory: {context[:2000]}\nQ: {question}\nA:"
+
+# 改进为结构化 prompt：
+system = """You are a personal assistant with access to the user's long-term memory.
+IMPORTANT RULES:
+- For "how many" questions: count ALL distinct instances across ALL memories
+- For questions about current state: use the MOST RECENT memory (check dates)
+- For preference questions: look for expressions of like/dislike/preference
+- If memories conflict, state the most recent one and note the change
+- Always ground your answer in the provided memories"""
+
+prompt = f"""Memory Context (sorted by date, newest first):
+{context}
+
+Question: {question}
+Answer (be specific and cite memory dates when relevant):"""
+```
+
+**涉及文件**：`benchmarks/longmemeval_bench.py`
+**预估工作量**：30 分钟
+
+---
+
+### LongMemEval 预期提升效果
+
+| 能力维度 | 当前 | +P0 | +P1 | +P2 | +P3 | +P4+P5 |
+|---------|------|-----|-----|-----|-----|--------|
+| Knowledge Update | 19.2% | ~45% | ~45% | ~53% | ~53% | ~58% |
+| Multi-Session | 34.6% | ~37% | ~52% | ~55% | ~55% | ~60% |
+| Temporal | 44.4% | ~52% | ~52% | ~62% | ~62% | ~65% |
+| Preference | 30.0% | ~30% | ~30% | ~30% | ~50% | ~55% |
+| Info Extraction | 46.8% | ~50% | ~52% | ~55% | ~55% | ~60% |
+| **Overall** | **38.6%** | **~43%** | **~48%** | **~53%** | **~55%** | **~60%** |
+
+---
+
+## 6. 综合改进路线图
+
+### Sprint 1（v0.0.11，1~2 天）：改动最小、收益最大
+
+| 修改项 | 来源 | 文件 | 预估工作量 |
 |--------|------|------|-----------|
-| deprecated skill 拒绝 re-promote | `skill_registry/registry.py` | ~3 行 | 5 min |
-| skill matching 提高阈值 + 传递 match_score | `memory_hub.py` + `context_composer.py` | ~10 行 | 15 min |
-| knowledge update: 同实体时间戳去重 | `context_composer.py` | ~30 行 | 1 hour |
+| deprecated skill 拒绝 re-promote | Extended §4-P0 | `skill_registry/registry.py` | 5 min |
+| skill matching 提高阈值 + 传递 match_score | Extended §4-P1 | `memory_hub.py` + `context_composer.py` | 15 min |
+| 时间戳感知排序 + update 信号检测 | LongMemEval §5-P0 | `context_composer.py` | 1~2 hours |
+| Answer Prompt 优化 | LongMemEval §5-P5 | `benchmarks/longmemeval_bench.py` | 30 min |
 
-### 第二优先级：提升竞争力（v0.0.12）
+### Sprint 2（v0.0.12，3~5 天）：涉及 recall pipeline 逻辑
 
-| 修改项 | 文件 | 预估工作量 |
-|--------|------|-----------|
-| 实体版本链 (KG superseded_by) | `second_brain/knowledge_graph.py` + `relation_extractor.py` | 4 hours |
-| skill rewrite 保留历史统计 | `skill_registry/registry.py` | 15 min |
-| skill recall 增加 cross-encoder rerank | `memory_hub.py` + `reranker.py` | 1 hour |
-| discover_threads 批量命名 + 缓存 | `second_brain/inference.py` | 1 hour |
+| 修改项 | 来源 | 文件 | 预估工作量 |
+|--------|------|------|-----------|
+| 聚合查询 Multi-hop Recall | LongMemEval §5-P1 | `memory_hub.py` | 3~5 hours |
+| Timeline 注入 | LongMemEval §5-P2 | `context_composer.py` | 1~2 hours |
+| skill rewrite 保留历史统计 | Extended §4-P2(4) | `skill_registry/registry.py` | 15 min |
+| skill recall cross-encoder rerank | Extended §4-P2(5) | `memory_hub.py` + `reranker.py` | 1 hour |
+| discover_threads 批量命名 + 缓存 | Extended §4-P2(6) | `second_brain/inference.py` | 1 hour |
 
-### 第三优先级：Benchmark 自身增强（v0.1.0）
+### Sprint 3（v0.1.0，1~2 周）：涉及子系统改动
 
-| 修改项 | 文件 | 预估工作量 |
-|--------|------|-----------|
-| CI 集成 — benchmark 作为 PR gate | 新建 `.github/workflows/benchmark.yml` | 2 hours |
-| Anti-hacking 测试扩展（投毒/injection/PII） | `benchmarks/extended_testdata.py` | 3 hours |
-| semantic_bridge 专项测试数据 | `benchmarks/extended_testdata.py` | 30 min |
-| benchmark 版本间趋势对比 | `benchmarks/trend_tracker.py` | 2 hours |
+| 修改项 | 来源 | 文件 | 预估工作量 |
+|--------|------|------|-----------|
+| 偏好/个性标签提取 | LongMemEval §5-P3 | `chronos/learner.py` + `context_composer.py` | 1~2 weeks |
+| KG 关系在 Recall 中实际启用 | LongMemEval §5-P4 | `context_composer.py` + `knowledge_graph.py` | 3~5 hours |
+| 实体版本链 (KG superseded_by) | Extended §4-P1(3) | `knowledge_graph.py` + `relation_extractor.py` | 4 hours |
+| CI benchmark 集成 | — | `.github/workflows/benchmark.yml` | 2 hours |
+| Anti-hacking 测试扩展 | — | `benchmarks/extended_testdata.py` | 3 hours |
+
+### 验证节奏
+
+每个 Sprint 完成后重跑 benchmark 验证效果：
+- **LongMemEval**: `SKIP_AUTO_INGEST=1 python -m benchmarks.longmemeval_bench`（~47 分钟）
+- **Extended**: `SKIP_AUTO_INGEST=1 LLM_PROVIDER=xai python -m benchmarks.extended_bench`（~33 分钟）
+- 对比版本间得分变化，确认改进方向正确
 
 ---
 
