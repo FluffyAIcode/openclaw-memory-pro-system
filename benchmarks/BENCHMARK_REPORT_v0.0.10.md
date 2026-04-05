@@ -110,76 +110,271 @@ Knowledge Update 得分低的核心原因：系统尚未实现 **时间戳感知
 
 ---
 
-## 4. 发现的关键问题（按严重度排序）
+## 4. 发现的关键问题与修改建议（按严重度排序）
 
 ### P0 — Critical
 
-1. **SK-33: Deprecated Skill 可被 Re-promote**
-   - `SkillRegistry.promote()` 未检查 `DEPRECATED` 状态
-   - 修复方案：添加 `if skill.status == SkillStatus.DEPRECATED: return None`
+**1. SK-33: Deprecated Skill 可被 Re-promote**
+
+- **现象**：`registry.deprecate(id)` 后再次 `registry.promote(id, force=True)` 能成功，状态变回 `active`
+- **根因**：`skill_registry/registry.py` 第 285~329 行 `promote()` 方法只检查了 cooldown 和 injection safety，没有检查当前状态是否为 `DEPRECATED`
+- **修改建议**：
+
+```python
+# skill_registry/registry.py — promote() 方法，在 cooldown 检查之前添加
+def promote(self, skill_id: str, force: bool = False) -> Optional[Skill]:
+    skills = self._load()
+    skill = skills.get(skill_id)
+    if not skill:
+        return None
+
+    # ← 新增：拒绝已废弃的 skill
+    if skill.status == SkillStatus.DEPRECATED:
+        logger.warning("Skill promote blocked: %s is DEPRECATED", skill.name)
+        return None
+
+    if not force:
+        # ... 原有 cooldown 检查 ...
+```
+
+- **验证用例**：SK-33 应从 FAIL 变为 PASS
+
+---
 
 ### P1 — High
 
-2. **SK-16/E2E-05: Skill 匹配缺少相关度阈值**
-   - 不相关查询（如"今天天气"）仍返回 5 个 skill
-   - 修复方案：在 `context_composer.py` 的 skill 注入阶段增加 `min_score` 阈值
+**2. SK-16 / E2E-05: Skill 匹配缺少相关度阈值**
 
-3. **Knowledge Update 全面薄弱**（LongMemEval 19.2%）
-   - 修复方案：recall 阶段增加时间戳感知 reranking，新信息权重 boost
+- **现象**：查询"今天天气怎么样"返回 5 个完全不相关的 skill；"今天吃什么"也注入 skill 到 L1
+- **根因链路**：
+  - `memory_hub.py` 第 608 行 `_recall_skills_vector()` 的阈值 `sim > 0.25` 太低
+  - `context_composer.py` 第 602~614 行 `_build_core_layer()` 对 skill 设置了 `composite_score: 1.0` 并 `force_add`，完全不考虑 match_score
+- **修改建议（两处联动）**：
+
+```python
+# memory_hub.py — _recall_skills_vector()，提高匹配阈值
+if sim > 0.45:  # 原值 0.25，提高到 0.45 过滤无关 skill
+    scored.append((sim, skill))
+
+# context_composer.py — _build_core_layer()，使用实际 match_score 而非硬编码 1.0
+for s in raw.get("skills", []):
+    match_score = s.get("match_score", 0)
+    if match_score < 0.4:  # ← 新增：低分 skill 不进 L1
+        continue
+    # ...
+    entry = {
+        "content": f"[Skill] {s.get('name', '?')}: {body}",
+        "score": match_score,            # ← 改用实际分数
+        "composite_score": match_score,   # ← 改用实际分数
+        # ...
+    }
+```
+
+- **验证用例**：SK-16 应返回 0 个 skill，E2E-05 应不注入 skill
+
+---
+
+**3. Knowledge Update 全面薄弱（LongMemEval 19.2%）**
+
+- **现象**：同一实体有新旧两个版本时（如"3 月买了 Tesla → 4 月换了 BMW"），recall 无法优先返回最新版本
+- **根因**：
+  - `context_composer.py` 的 `score_item()` 虽然有 `_recency_score()` 衰减，但权重配比中 recency 权重仅 0.15~0.3，不足以让新信息排在旧信息前面
+  - 系统没有 **实体级版本追踪** — 不知道"Tesla Model 3"和"BMW iX3"指向同一个槽位（用户的车）
+- **修改建议（分两步）**：
+
+第一步（v0.0.11，快速收益）— 在 `_build_core_layer` 中增加 **同实体时间戳去重**：
+
+```python
+# context_composer.py — _build_core_layer()，evidence 排序后增加时间戳去重
+def _dedupe_by_entity(items: list) -> list:
+    """当多条 evidence 描述同一实体时，只保留最新的一条。
+    判定标准：两条内容的 embedding 相似度 > 0.85 时视为同一实体的不同版本。
+    """
+    # 按 timestamp 降序排，遍历时跳过与已选 item 高度相似的旧条目
+    ...
+```
+
+第二步（v0.0.12，根本方案）— 在 KG 中引入 **实体版本链**：
+
+```
+Node("我的车=Tesla Model 3", type=FACT, valid_from="2026-03-01")
+   ──[superseded_by]──▶
+Node("我的车=BMW iX3", type=FACT, valid_from="2026-04-01")
+```
+
+recall 时通过 KG 查询实体的 latest_version，将旧版本自动降权或标注为 `[已更新]`
+
+---
 
 ### P2 — Medium
 
-4. **SK-31: Skill Rewrite 后 uses 计数重置**
-   - `_trigger_rewrite` 更新内容后重置了 feedback 计数器
-   - 修复方案：rewrite 时保留 historical 统计
+**4. SK-31: Skill Rewrite 后 uses 计数重置**
 
-5. **SK-12: 中文同义词匹配精度不足**
-   - "ping不通如何排查" 匹配到 "用户访谈技巧"
-   - 修复方案：考虑补充关键词 fallback 策略或 fine-tune embedding
+- **现象**：utility 为 0%（3 次失败 / 3 次使用）触发 rewrite 后，`total_uses` 被重置为 1，不满足 `MIN_USES_FOR_REWRITE >= 3` 的后续检查条件
+- **根因**：`skill_registry/registry.py` 第 462~465 行，`_trigger_rewrite()` 中硬重置了 `successes = 0` 和 `failures = 0`
+- **修改建议**：
 
-6. **CL-30: discover_threads 耗时 650s**（3424 节点图）
-   - 修复方案：限制社区命名的并发批次或缓存
+```python
+# skill_registry/registry.py — _trigger_rewrite()
+# 改为：保留历史统计，另起一个 "rewrite 后" 的计数周期
+if rewritten and len(rewritten.strip()) > 50:
+    # ... 安全检查 ...
+    skill.content = rewritten.strip()
+    skill.version += 1
+    # ← 保留总量，新增 rewrite_epoch 字段记录从哪个版本开始计数
+    skill.rewrite_epoch_successes = 0
+    skill.rewrite_epoch_failures = 0
+    # 不再重置 skill.successes 和 skill.failures
+    skill.updated_at = datetime.now().isoformat()
+    self._save_all()
+```
+
+或更简单的方案：只重置 `failures`，保留 `successes`，避免 `total_uses` 跌到 1：
+
+```python
+    skill.failures = 0       # 给 rewrite 后的内容一个"重新证明"的机会
+    # skill.successes = 0    # ← 删除这行，保留历史成功次数
+```
+
+- **验证用例**：SK-31 中 rewrite 后 `total_uses` 应 >= 3
+
+---
+
+**5. SK-12: 中文同义词匹配精度不足**
+
+- **现象**：查询"容器之间 ping 不通如何排查"匹配到"用户访谈技巧"而非"Docker 网络调试"
+- **根因**：`nomic-embed-text-v1.5` 对中文口语化表达的语义捕捉不够精确，"ping 不通" ↔ "网络调试"的向量距离大于"ping 不通" ↔ "访谈技巧"
+- **修改建议**：
+
+方案 A（推荐）— 在 `_recall_skills_vector` 中增加 **二阶段 rerank**：
+
+```python
+# memory_hub.py — _recall_skills_vector()
+# 第一阶段：embedding 粗筛（保留 top 10）
+# 第二阶段：cross-encoder rerank（使用已有的 reranker.py）
+from reranker import rerank
+candidates = [(sim, skill) for sim, skill in scored if sim > 0.2]
+if candidates:
+    texts = [f"{s.name}: {s.content[:200]}" for _, s in candidates]
+    reranked = rerank(query, texts, top_k=5)
+    return [(reranked[i].score, candidates[i][1]) for i in reranked.indices]
+```
+
+方案 B — Skill 注册时生成 **搜索扩展词**：
+
+```python
+# skill_registry/registry.py — add() 时自动生成
+skill.search_aliases = ["Docker 网络", "容器通信", "ping 不通", "网络排查"]
+# _recall_skills_keyword 中同时搜索 aliases
+```
+
+---
+
+**6. CL-30: discover_threads 耗时 650s（3424 节点图）**
+
+- **现象**：`inference_engine.discover_threads()` 对 945 个社区逐一调用 LLM 命名，单次 ~0.7s × 945 = 660s
+- **根因**：`second_brain/inference.py` 第 321~362 行，`_name_thread()` 为每个 community 单独调用 `llm_client.generate()`
+- **修改建议**：
+
+方案 A（推荐）— **批量命名 + 缓存**：
+
+```python
+# second_brain/inference.py — discover_threads()
+# 1. 缓存：已命名的 community 不重复调用 LLM
+# 2. 批量：将多个 community 合并成一个 prompt，一次 LLM 调用命名 10 个
+# 3. 裁剪：跳过 size < 3 的小社区，直接用启发式命名
+
+def _name_threads_batch(self, communities: list, batch_size: int = 10):
+    unnamed = [c for c in communities if self._thread_cache.get(id(c)) is None]
+    for batch in chunks(unnamed, batch_size):
+        prompt = "\n\n".join(
+            f"社区 {i+1}:\n" + "\n".join(f"- {n.content[:60]}" for n in c[:5])
+            for i, c in enumerate(batch)
+        )
+        prompt += "\n\n为每个社区各取一个5-10字标题，格式：1. 标题\\n2. 标题\\n..."
+        raw = llm_client.generate(prompt, model=llm_client.FAST_MODEL, ...)
+        # 解析并缓存
+```
+
+预期效果：945 社区 → ~95 次 LLM 调用（每次命名 10 个），从 650s 降到 ~70s
+
+方案 B — **限制社区数量上限**：
+
+```python
+communities = self._kg.get_communities()
+communities.sort(key=len, reverse=True)
+communities = communities[:100]  # 只命名最大的 100 个社区
+```
+
+---
 
 ### P3 — Low
 
-7. **CL-01/02: semantic_bridge 策略触发率低**
-   - 修复方案：调低 semantic_bridge 相似度阈值
+**7. CL-01/02: semantic_bridge 策略触发率低**
 
-8. **SK-24/E2E-03/04: 偏好类 Skill 匹配弱**
-   - 修复方案：偏好类 skill 增加场景关键词扩展
+- **现象**：5 轮碰撞中 `semantic_bridge` 从未触发
+- **根因**：种子数据的 21 条记忆虽然跨 3 个领域（fitness/coding/reading），但 `semantic_bridge` 策略在挑选配对时要求 embedding 相似度在 0.3~0.7 之间（既不太近也不太远），种子数据未命中此区间
+- **修改建议**：
+
+```python
+# second_brain/collision.py — _semantic_bridge()
+# 降低下界阈值，扩大配对候选范围
+MIN_SIM = 0.15  # 原值约 0.3，降低以捕捉更多跨领域关联
+MAX_SIM = 0.75  # 原值约 0.7，略微放宽
+```
+
+同时在 `extended_testdata.py` 中增加专门设计的 semantic_bridge 测试对（已有 `COLLISION_SEMANTIC_PAIRS`，但未被碰撞引擎单独路由）
+
+---
+
+**8. SK-24 / E2E-03 / E2E-04: 偏好类 Skill 匹配弱**
+
+- **现象**：查询"帮我配置编辑器"无法匹配到"偏好:dark mode"skill
+- **根因**：skill 名称/内容是"深色主题 dark mode"，与"配置编辑器"的语义距离较大
+- **修改建议**：
+
+```python
+# skill_registry/registry.py — add() 时为偏好类 skill 自动扩展场景词
+if "偏好" in name or any(t in tags for t in ["preference", "偏好"]):
+    skill.applicable_scenarios = (
+        skill.applicable_scenarios + " " +
+        _expand_preference_scenarios(skill.content)
+    )
+    # 例如：content="深色主题" → 扩展 "编辑器主题, IDE配置, 终端配色, 浏览器外观"
+
+# memory_hub.py — _recall_skills_vector() 中用扩展后的文本做 embedding
+text = f"{skill.name} {skill.content[:500]} {skill.applicable_scenarios}"
+```
 
 ---
 
 ## 5. 改进建议路线图
 
-### 第一优先级：修复 Critical/High（影响生产安全和核心功能）
+### 第一优先级：修复 Critical/High（v0.0.11，影响生产安全和核心功能）
 
-```
-v0.0.11 目标：
-├── fix: SkillRegistry.promote() 拒绝 DEPRECATED 状态
-├── feat: skill matching 增加 min_score 阈值过滤
-└── feat: recall 增加时间戳感知 reranking
-```
+| 修改项 | 文件 | 行数 | 预估工作量 |
+|--------|------|------|-----------|
+| deprecated skill 拒绝 re-promote | `skill_registry/registry.py` | ~3 行 | 5 min |
+| skill matching 提高阈值 + 传递 match_score | `memory_hub.py` + `context_composer.py` | ~10 行 | 15 min |
+| knowledge update: 同实体时间戳去重 | `context_composer.py` | ~30 行 | 1 hour |
 
-### 第二优先级：提升竞争力（Knowledge Update + Multi-Session）
+### 第二优先级：提升竞争力（v0.0.12）
 
-```
-v0.0.12 目标：
-├── feat: 知识更新检测（实体版本追踪）
-├── feat: 多会话聚合增强（话题聚类 + 去重合并）
-├── fix: skill rewrite 保留历史统计
-└── perf: discover_threads 批量命名优化
-```
+| 修改项 | 文件 | 预估工作量 |
+|--------|------|-----------|
+| 实体版本链 (KG superseded_by) | `second_brain/knowledge_graph.py` + `relation_extractor.py` | 4 hours |
+| skill rewrite 保留历史统计 | `skill_registry/registry.py` | 15 min |
+| skill recall 增加 cross-encoder rerank | `memory_hub.py` + `reranker.py` | 1 hour |
+| discover_threads 批量命名 + 缓存 | `second_brain/inference.py` | 1 hour |
 
-### 第三优先级：Benchmark 自身增强
+### 第三优先级：Benchmark 自身增强（v0.1.0）
 
-```
-v0.1.0 目标：
-├── feat: CI 集成 — benchmark 作为 PR gate
-├── feat: 增加 anti-hacking 测试（投毒检测、prompt injection、PII 泄漏）
-├── feat: 增加 semantic_bridge 策略的专项测试数据
-└── feat: benchmark 结果趋势追踪（版本间对比）
-```
+| 修改项 | 文件 | 预估工作量 |
+|--------|------|-----------|
+| CI 集成 — benchmark 作为 PR gate | 新建 `.github/workflows/benchmark.yml` | 2 hours |
+| Anti-hacking 测试扩展（投毒/injection/PII） | `benchmarks/extended_testdata.py` | 3 hours |
+| semantic_bridge 专项测试数据 | `benchmarks/extended_testdata.py` | 30 min |
+| benchmark 版本间趋势对比 | `benchmarks/trend_tracker.py` | 2 hours |
 
 ---
 
