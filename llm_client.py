@@ -29,6 +29,7 @@ _XAI_URL = "https://api.x.ai/v1/chat/completions"
 _OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-r1"
 _OPENROUTER_FAST_MODEL = "deepseek/deepseek-chat"
 _XAI_DEFAULT_MODEL = "grok-4"
+_XAI_FAST_MODEL = "grok-4-1-fast-non-reasoning"
 
 FAST_MODEL = _OPENROUTER_FAST_MODEL
 
@@ -47,15 +48,23 @@ def _load_auth_profiles() -> dict:
 
 
 def _resolve_provider() -> Tuple[Optional[str], str, str]:
-    """Return (api_key, api_url, default_model) for the best available provider."""
-    key = os.environ.get("OPENROUTER_API_KEY")
-    if key:
-        return key, _OPENROUTER_URL, _OPENROUTER_DEFAULT_MODEL
+    """Return (api_key, api_url, default_model) for the best available provider.
 
-    profiles = _load_auth_profiles()
-    or_profile = profiles.get("profiles", {}).get("openrouter:default", {})
-    if or_profile.get("key"):
-        return or_profile["key"], _OPENROUTER_URL, _OPENROUTER_DEFAULT_MODEL
+    Set LLM_PROVIDER=xai to skip OpenRouter and use xAI/Grok directly.
+    """
+    forced = os.environ.get("LLM_PROVIDER", "").lower()
+
+    if forced != "xai":
+        key = os.environ.get("OPENROUTER_API_KEY")
+        if key:
+            return key, _OPENROUTER_URL, _OPENROUTER_DEFAULT_MODEL
+
+        profiles = _load_auth_profiles()
+        or_profile = profiles.get("profiles", {}).get("openrouter:default", {})
+        if or_profile.get("key"):
+            return or_profile["key"], _OPENROUTER_URL, _OPENROUTER_DEFAULT_MODEL
+    else:
+        profiles = _load_auth_profiles()
 
     key = os.environ.get("XAI_API_KEY")
     if key:
@@ -79,10 +88,12 @@ _resolved: Optional[Tuple[Optional[str], str, str]] = None
 
 
 def _get_provider() -> Tuple[Optional[str], str, str]:
-    global _resolved
+    global _resolved, FAST_MODEL
     if _resolved is None:
         _resolved = _resolve_provider()
         provider_name = "OpenRouter" if _resolved[1] == _OPENROUTER_URL else "xAI"
+        if _resolved[1] == _XAI_URL:
+            FAST_MODEL = _XAI_FAST_MODEL
         if _resolved[0]:
             logger.info("LLM client using %s (%s)", provider_name, _resolved[2])
         else:

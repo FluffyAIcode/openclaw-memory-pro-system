@@ -204,6 +204,7 @@ class InferenceEngine:
             system="只输出 JSON 数组，不要其他内容。",
             max_tokens=200,
             temperature=0.3,
+            model=llm_client.FAST_MODEL,
         )
         if not raw:
             return self._heuristic_dimensions(decision)
@@ -355,6 +356,7 @@ class InferenceEngine:
                     system="只输出标题文本，不要其他内容。",
                     max_tokens=30,
                     temperature=0.3,
+                    model=llm_client.FAST_MODEL,
                 )
                 if raw and len(raw.strip()) < 30:
                     return raw.strip().strip('"').strip("'")

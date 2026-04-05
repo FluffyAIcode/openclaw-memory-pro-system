@@ -247,6 +247,7 @@ class CollisionEngine:
                     system="Extract focus keywords. Output only comma-separated keywords.",
                     max_tokens=60,
                     temperature=0.2,
+                    model=llm_client.FAST_MODEL,
                 )
                 if result:
                     self._attention_focus = [
@@ -655,6 +656,7 @@ class CollisionEngine:
                     system="你是创意思维助手。只输出规定格式的分析，简洁有力。",
                     max_tokens=800,
                     temperature=0.9,
+                    model=llm_client.FAST_MODEL,
                 )
         except ImportError:
             pass

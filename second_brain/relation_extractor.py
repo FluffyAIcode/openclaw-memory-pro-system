@@ -238,6 +238,7 @@ class RelationExtractor:
             system="你是知识图谱构建助手。只输出 JSON，不要添加其他内容。",
             max_tokens=1500,
             temperature=0.3,
+            model=llm_client.FAST_MODEL,
         )
 
         if not raw:

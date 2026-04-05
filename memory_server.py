@@ -924,6 +924,7 @@ def _execute_endpoint(path: str, body: dict) -> dict:
             source=body.get("source", "cli"),
             importance=body.get("importance", 0.7),
             force_systems=["memora"],
+            skip_hooks=body.get("skip_hooks", False),
         )
 
     elif path == "/digest":
@@ -1405,6 +1406,16 @@ class MemoryHandler(BaseHTTPRequestHandler):
             result = sb_bridge.status()
             self._respond(200, result)
 
+        elif self.path == "/vectorstore/reload":
+            from memora.vectorstore import vector_store
+            with vector_store._lock:
+                vector_store._entries = None
+                vector_store._bm25_dirty = True
+            vector_store._load()
+            n = len(vector_store._entries) if vector_store._entries else 0
+            logger.info("Vectorstore reloaded: %d entries", n)
+            self._respond(200, {"reloaded": True, "entries": n})
+
         elif self.path == "/contradictions":
             from second_brain.inference import inference_engine
             reports = inference_engine.scan_contradictions()
@@ -1682,11 +1693,10 @@ def _kill_stale_server(pid_file: Path, port: int) -> None:
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        sock.settimeout(0.5)
+        sock.settimeout(1)
         sock.connect(("127.0.0.1", port))
         sock.close()
-        logger.error("Port %d still occupied by unknown process — cannot start", port)
-        sys.exit(1)
+        logger.warning("Port %d may still be occupied — will try to bind with SO_REUSEADDR", port)
     except (ConnectionRefusedError, OSError):
         pass  # port free — good
     finally:
@@ -1758,8 +1768,11 @@ def main():
     except Exception as e:
         logger.warning("KG embedding backfill skipped: %s", e)
 
-    ingestor = AutoIngestor()
-    ingestor.start()
+    if os.environ.get("SKIP_AUTO_INGEST") != "1":
+        ingestor = AutoIngestor()
+        ingestor.start()
+    else:
+        logger.info("AutoIngestor disabled (SKIP_AUTO_INGEST=1)")
 
     scheduler = Scheduler(_telegram)
     scheduler.start()

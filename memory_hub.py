@@ -144,7 +144,8 @@ class MemoryHub:
                  sensitivity: Optional[str] = None,
                  doc_id: Optional[str] = None,
                  title: Optional[str] = None,
-                 force_systems: Optional[List[str]] = None) -> Dict:
+                 force_systems: Optional[List[str]] = None,
+                 skip_hooks: bool = False) -> Dict:
         """
         Smart ingestion with intent tagging and sensitivity classification.
 
@@ -246,7 +247,7 @@ class MemoryHub:
         logger.info("Memory Hub: remembered %d words via %s (tag=%s)",
                      word_count, ", ".join(results["systems_used"]), tag)
 
-        if self._post_remember_hooks:
+        if self._post_remember_hooks and not skip_hooks:
             def _run_hooks():
                 for hook in self._post_remember_hooks:
                     try:
