@@ -39,8 +39,8 @@ class SecondBrainConfig(BaseSettings):
 
     collision_interval_hours: float = 6.0
     collisions_per_round: int = 3
-    semantic_bridge_low: float = 0.35
-    semantic_bridge_high: float = 0.65
+    semantic_bridge_low: float = 0.15
+    semantic_bridge_high: float = 0.75
     insight_novelty_threshold: int = 4
 
     max_search_candidates: int = 20

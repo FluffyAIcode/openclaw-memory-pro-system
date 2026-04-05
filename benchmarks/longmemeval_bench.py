@@ -131,10 +131,21 @@ def _llm_call(prompt: str, system: str = "", max_tokens: int = 256,
 
 def generate_answer(question: str, context: str, q_date: str) -> Optional[str]:
     system_prompt = (
-        "Answer concisely based ONLY on the memory context. "
-        "If the context lacks relevant info, say you don't know."
+        "You are a personal assistant with access to the user's long-term memory.\n"
+        "IMPORTANT RULES:\n"
+        "- For \"how many\" questions: count ALL distinct instances across ALL memories\n"
+        "- For questions about current state: use the MOST RECENT memory (check dates)\n"
+        "- For preference questions: look for expressions of like/dislike/preference\n"
+        "- If memories conflict, state the most recent one and note the change\n"
+        "- Always ground your answer in the provided memories\n"
+        "- If the context lacks relevant info, say you don't know"
     )
-    prompt = f"Date: {q_date}\n\nMemory:\n{context[:2000]}\n\nQ: {question}\nA:"
+    prompt = (
+        f"Today's date: {q_date}\n\n"
+        f"Memory Context (sorted by date, newest first):\n{context[:2000]}\n\n"
+        f"Question: {question}\n"
+        f"Answer (be specific and cite memory dates when relevant):"
+    )
     return _llm_call(prompt, system=system_prompt, max_tokens=200)
 
 

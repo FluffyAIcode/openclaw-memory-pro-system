@@ -97,6 +97,7 @@ class MemoryHub:
         self._post_recall_hooks: list = []
 
         self._post_remember_hooks.append(self._default_kg_hook)
+        self._post_remember_hooks.append(self._preference_extraction_hook)
 
     @staticmethod
     def _default_kg_hook(content: str, importance: float, results: dict = None):
@@ -108,6 +109,19 @@ class MemoryHub:
             extractor.extract(content, importance=importance)
         except Exception as e:
             logger.debug("KG extraction skipped: %s", e)
+
+    @staticmethod
+    def _preference_extraction_hook(content: str, importance: float,
+                                    results: dict = None):
+        """F-10: extract and persist user preferences from ingested content."""
+        try:
+            from chronos.learner import extract_preferences, store_preferences
+            prefs = extract_preferences(content)
+            if prefs:
+                store_preferences(prefs)
+                logger.debug("Extracted %d preferences from content", len(prefs))
+        except Exception as e:
+            logger.debug("Preference extraction skipped: %s", e)
 
     def register_post_remember_hook(self, fn):
         """Register a callback: fn(content: str, importance: float, results: dict)"""
@@ -259,6 +273,15 @@ class MemoryHub:
 
         return results
 
+    _AGG_PATTERNS = [
+        re.compile(p, re.IGNORECASE)
+        for p in (
+            r'how many', r'how much', r'list all', r'what are all',
+            r'everything .* about', r'all .* (?:i|my)',
+            r'有多少', r'列出所有', r'哪些', r'都有什么', r'一共',
+        )
+    ]
+
     def recall(self, query: str, top_k: int = 8,
                max_tokens: int = 4000,
                min_score: float = 0.45) -> Dict:
@@ -271,9 +294,15 @@ class MemoryHub:
           4. Composition    — Context Composer (strategy router → layered
                              assembly → quality gate → budget controller)
 
+        F-05: aggregation queries ("how many …", "list all …") auto-expand
+        retrieval to top_k×3 and apply MMR diversity selection.
+
         max_tokens caps the total content size in composed results.
         min_score filters out low-relevance results at retrieval stage.
         """
+        is_aggregation = any(p.search(query) for p in self._AGG_PATTERNS)
+        fetch_k = top_k * 3 if is_aggregation else top_k
+
         results = {
             "query": query,
             "skills": [],
@@ -292,7 +321,7 @@ class MemoryHub:
         def _fetch_memora():
             try:
                 mrs = self.vector_store.search(
-                    query, limit=top_k, min_score=min_score)
+                    query, limit=fetch_k, min_score=min_score)
                 for r in mrs:
                     r["system"] = "memora"
                 return mrs
@@ -302,7 +331,7 @@ class MemoryHub:
 
         def _fetch_msa():
             try:
-                msa_result = self.msa.query_memory(query, top_k=min(top_k, 5))
+                msa_result = self.msa.query_memory(query, top_k=min(fetch_k, 15))
                 out = []
                 for doc in msa_result.get("results", []):
                     out.append({
@@ -330,7 +359,11 @@ class MemoryHub:
         # ── Rerank evidence ───────────────────────────────────────
         evidence = results["memora"] + results["msa"]
         evidence.sort(key=lambda x: x.get("score", 0), reverse=True)
-        results["evidence"] = self._rerank(query, evidence[:top_k * 2])[:top_k]
+        reranked = self._rerank(query, evidence[:fetch_k * 2])
+        if is_aggregation:
+            results["evidence"] = self._diverse_select(reranked, top_k)
+        else:
+            results["evidence"] = reranked[:top_k]
 
         # ── Conflict scan (Step 3: real-time contradiction detection) ──
         results["contradictions"] = self._scan_recall_conflicts(
@@ -547,6 +580,49 @@ class MemoryHub:
             return candidates
 
     @staticmethod
+    def _diverse_select(candidates: list, target: int,
+                        diversity_lambda: float = 0.5) -> list:
+        """MMR-style diverse selection for aggregation queries.
+
+        Greedily picks items that maximise relevance while minimising
+        redundancy with already-selected items (3-gram Jaccard proxy).
+        """
+        if len(candidates) <= target:
+            return candidates
+
+        def _jaccard(a: str, b: str) -> float:
+            n = 3
+            ga = {a[i:i+n] for i in range(max(len(a) - n + 1, 1))}
+            gb = {b[i:i+n] for i in range(max(len(b) - n + 1, 1))}
+            inter = len(ga & gb)
+            union = len(ga | gb)
+            return inter / union if union else 0.0
+
+        selected = []
+        sel_texts: list = []
+        remaining = list(candidates)
+
+        while remaining and len(selected) < target:
+            best_mmr, best_idx = -float("inf"), -1
+            for i, c in enumerate(remaining):
+                score = c.get("score", 0)
+                if sel_texts:
+                    ct = c.get("content", "")[:200]
+                    max_sim = max(_jaccard(ct, st) for st in sel_texts)
+                else:
+                    max_sim = 0.0
+                mmr = diversity_lambda * score - (1 - diversity_lambda) * max_sim
+                if mmr > best_mmr:
+                    best_mmr, best_idx = mmr, i
+            if best_idx < 0:
+                break
+            item = remaining.pop(best_idx)
+            selected.append(item)
+            sel_texts.append(item.get("content", "")[:200])
+
+        return selected
+
+    @staticmethod
     def _trim_to_budget(merged: list, max_tokens: int) -> list:
         """Trim merged results to fit within a token budget."""
         try:
@@ -578,9 +654,9 @@ class MemoryHub:
 
             scored.sort(key=lambda x: x[0], reverse=True)
             return [
-                {**s.to_dict(), "match_score": round(sc, 2)}
+                {**s.to_dict(), "match_score": round(sc, 4)}
                 for sc, s in scored[:5]
-                if sc > 0.25
+                if sc > 0.4
             ]
         except Exception as e:
             logger.warning("Skill recall failed: %s", e)
@@ -588,7 +664,7 @@ class MemoryHub:
 
     def _recall_skills_vector(self, query: str,
                               skills: list) -> List[tuple]:
-        """Primary path: embed query + skill content, rank by cosine similarity."""
+        """Two-stage skill recall: embedding coarse filter → cross-encoder rerank (F-07)."""
         try:
             import shared_embedder
             emb = shared_embedder.get()
@@ -600,14 +676,33 @@ class MemoryHub:
             embed_d = emb.embed_document if hasattr(emb, "embed_document") else emb.embed
 
             q_vec = np.array(embed_q(query), dtype=np.float32)
-            scored = []
+            coarse = []
             for skill in skills:
                 text = f"{skill.name} {skill.content[:500]}"
                 s_vec = np.array(embed_d(text), dtype=np.float32)
                 sim = float(np.dot(q_vec, s_vec))
-                if sim > 0.25:
-                    scored.append((sim, skill))
-            return scored
+                if sim > 0.2:
+                    coarse.append((sim, skill))
+
+            if not coarse:
+                return []
+
+            coarse.sort(key=lambda x: x[0], reverse=True)
+            coarse = coarse[:10]
+
+            try:
+                from reranker import rerank_pairs
+                texts = [f"{s.name}: {s.content[:200]}" for _, s in coarse]
+                ranked = rerank_pairs(query, texts)
+                result = []
+                for ce_score, orig_idx in ranked:
+                    bi_score = coarse[orig_idx][0]
+                    combined = round(0.4 * bi_score + 0.6 * max(min((ce_score + 10) / 20, 1.0), 0.0), 4)
+                    if combined > 0.45:
+                        result.append((combined, coarse[orig_idx][1]))
+                return result
+            except Exception:
+                return [(sim, sk) for sim, sk in coarse if sim > 0.45]
         except Exception as e:
             logger.debug("Vector skill recall unavailable: %s", e)
             return []

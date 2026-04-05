@@ -40,7 +40,7 @@ _EXTRACTION_PROMPT = """\
     {{{{"content": "提取出的知识单元（简洁准确）", "type": "fact|decision|preference|goal|question", "confidence": 0.9, "sentiment": "positive|negative|neutral|excited|frustrated|curious|determined|concerned"}}}}
   ],
   "edges": [
-    {{{{"from_content": "新节点内容 或 已有节点ID", "to_content": "新节点内容 或 已有节点ID", "type": "supports|contradicts|extends|depends_on|alternative_to|addresses", "weight": 0.8, "evidence": "一句话理由"}}}}
+    {{{{"from_content": "新节点内容 或 已有节点ID", "to_content": "新节点内容 或 已有节点ID", "type": "supports|contradicts|extends|depends_on|alternative_to|addresses|superseded_by", "weight": 0.8, "evidence": "一句话理由"}}}}
   ]
 }}}}
 
@@ -49,6 +49,7 @@ _EXTRACTION_PROMPT = """\
 - type 必须准确：fact=客观事实, decision=用户做的选择, preference=偏好/倾向, goal=目标/愿望, question=未解决的问题
 - sentiment 表示这条知识携带的情感色彩：positive(积极), negative(消极), neutral(中性), excited(兴奋), frustrated(沮丧), curious(好奇), determined(坚定), concerned(担忧)
 - 如果新记忆与任何已有节点存在矛盾（contradicts），必须标出——这是最有价值的关系
+- superseded_by：当新记忆更新了已有事实时使用（例如"之前用X，现在换成Y"），方向为 旧节点 → 新节点
 - depends_on 表示逻辑依赖（A 成立的前提是 B 成立）
 - 如果没有有价值的知识，返回空数组: {{{{"new_nodes": [], "edges": []}}}}
 - from_content / to_content: 如果引用已有节点，使用其 ID（如 "abc123def456"）；如果引用新节点，使用该新节点的 content 文本

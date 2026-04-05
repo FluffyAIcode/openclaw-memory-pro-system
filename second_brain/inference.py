@@ -108,6 +108,7 @@ class InferenceEngine:
 
     def __init__(self, knowledge_graph: KnowledgeGraph = None):
         self._kg = knowledge_graph or kg
+        self._thread_name_cache: Dict[str, str] = {}
 
     # ── 1. Contradiction Detection ───────────────────────────────
 
@@ -319,13 +320,37 @@ class InferenceEngine:
     # ── 4. Thread Discovery ──────────────────────────────────────
 
     def discover_threads(self) -> List[Thread]:
-        """Use community detection to auto-discover thought threads."""
+        """Use community detection to auto-discover thought threads.
+
+        F-09: batch LLM naming (10 communities per call) + cache + heuristic
+        for tiny communities (< 3 nodes) to reduce ~650s → ~70s.
+        """
         communities = self._kg.get_communities()
-        threads = []
-        for community in communities:
-            if len(community) < 2:
+        valid = [c for c in communities if len(c) >= 2]
+
+        needs_llm = []
+        small = []
+        for community in valid:
+            cache_key = self._community_cache_key(community)
+            if cache_key in self._thread_name_cache:
                 continue
-            title = self._name_thread(community)
+            if len(community) < 3:
+                small.append(community)
+            else:
+                needs_llm.append(community)
+
+        for c in small:
+            key = self._community_cache_key(c)
+            self._thread_name_cache[key] = self._heuristic_name(c)
+
+        if needs_llm:
+            self._name_threads_batch(needs_llm)
+
+        threads = []
+        for community in valid:
+            title = self._thread_name_cache.get(
+                self._community_cache_key(community),
+                self._heuristic_name(community))
             type_counts: Dict[str, int] = {}
             for node in community:
                 t = node.node_type.value
@@ -342,31 +367,84 @@ class InferenceEngine:
         threads.sort(key=lambda t: t.node_count, reverse=True)
         return threads
 
-    def _name_thread(self, community: List[KGNode]) -> str:
-        """Generate a short title for a community of nodes."""
-        try:
-            import llm_client
-            if llm_client.is_available():
-                contents = "\n".join(
-                    f"- ({n.node_type.value}) {n.content[:80]}"
-                    for n in community[:10]
-                )
-                raw = llm_client.generate(
-                    prompt=(f"以下是一组相关的知识节点，请用一个简短的标题（5-10字）概括它们的主题：\n{contents}"),
-                    system="只输出标题文本，不要其他内容。",
-                    max_tokens=30,
-                    temperature=0.3,
-                    model=llm_client.FAST_MODEL,
-                )
-                if raw and len(raw.strip()) < 30:
-                    return raw.strip().strip('"').strip("'")
-        except ImportError:
-            pass
+    @staticmethod
+    def _community_cache_key(community: List[KGNode]) -> str:
+        ids = sorted(n.id for n in community)
+        return "|".join(ids[:5])
 
+    @staticmethod
+    def _heuristic_name(community: List[KGNode]) -> str:
         for node in community:
             if node.node_type in (KGNodeType.GOAL, KGNodeType.DECISION):
                 return node.content[:30]
         return community[0].content[:30] if community else "未命名线索"
+
+    def _name_threads_batch(self, communities: List[List[KGNode]],
+                            batch_size: int = 10):
+        """Batch-name communities via LLM — 10 per call (F-09)."""
+        try:
+            import llm_client
+            if not llm_client.is_available():
+                for c in communities:
+                    self._thread_name_cache[self._community_cache_key(c)] = self._heuristic_name(c)
+                return
+        except ImportError:
+            for c in communities:
+                self._thread_name_cache[self._community_cache_key(c)] = self._heuristic_name(c)
+            return
+
+        for start in range(0, len(communities), batch_size):
+            batch = communities[start:start + batch_size]
+            prompt_parts = []
+            for i, community in enumerate(batch, 1):
+                nodes_text = "\n".join(
+                    f"  - ({n.node_type.value}) {n.content[:60]}"
+                    for n in community[:5]
+                )
+                prompt_parts.append(f"社区 {i} ({len(community)} 节点):\n{nodes_text}")
+
+            prompt = (
+                "为以下每个知识社区各取一个简短标题（5-10字）。\n"
+                "严格按格式输出，每行一个：1. 标题\n2. 标题\n...\n\n"
+                + "\n\n".join(prompt_parts)
+            )
+
+            try:
+                raw = llm_client.generate(
+                    prompt=prompt,
+                    system="只输出编号+标题列表，不要其他内容。",
+                    max_tokens=30 * len(batch),
+                    temperature=0.3,
+                    model=llm_client.FAST_MODEL,
+                )
+                titles = self._parse_batch_titles(raw, len(batch))
+                for j, community in enumerate(batch):
+                    key = self._community_cache_key(community)
+                    if j < len(titles) and titles[j]:
+                        self._thread_name_cache[key] = titles[j]
+                    else:
+                        self._thread_name_cache[key] = self._heuristic_name(community)
+            except Exception as e:
+                logger.warning("Batch naming failed: %s", e)
+                for community in batch:
+                    key = self._community_cache_key(community)
+                    self._thread_name_cache[key] = self._heuristic_name(community)
+
+    @staticmethod
+    def _parse_batch_titles(raw: str, expected: int) -> List[str]:
+        if not raw:
+            return []
+        titles = []
+        for line in raw.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            cleaned = line.lstrip("0123456789.-) ").strip().strip('"').strip("'")
+            if cleaned:
+                titles.append(cleaned[:30])
+        while len(titles) < expected:
+            titles.append("")
+        return titles
 
     def _assess_thread_status(self, community: List[KGNode]) -> str:
         has_question = any(n.node_type == KGNodeType.QUESTION for n in community)

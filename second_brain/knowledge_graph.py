@@ -45,6 +45,7 @@ class KGEdgeType(str, Enum):
     DEPENDS_ON = "depends_on"
     ALTERNATIVE_TO = "alternative_to"
     ADDRESSES = "addresses"
+    SUPERSEDED_BY = "superseded_by"
 
 
 class KGNode:
@@ -357,6 +358,31 @@ class KnowledgeGraph:
                 result.append(nodes)
         return result
 
+    def get_latest_version(self, node_id: str) -> Optional[KGNode]:
+        """F-12: follow superseded_by chain to find the newest version of a fact."""
+        self._ensure_loaded()
+        visited = set()
+        current = node_id
+        while current and current not in visited:
+            visited.add(current)
+            out_edges = self.get_edges(current, KGEdgeType.SUPERSEDED_BY, direction="out")
+            if not out_edges:
+                break
+            current = out_edges[0][1]
+        node = self._nodes.get(current)
+        if node and current != node_id:
+            return node
+        return None
+
+    def find_superseded_nodes(self) -> List[str]:
+        """Return IDs of nodes that have been superseded (have outgoing superseded_by)."""
+        self._ensure_loaded()
+        superseded = []
+        for src, tgt, data in self._graph.edges(data=True):
+            if data.get("edge_type") == KGEdgeType.SUPERSEDED_BY.value:
+                superseded.append(src)
+        return superseded
+
     def get_mature_patterns(self, min_maturity: float = 0.7) -> List[KGNode]:
         self._ensure_loaded()
         for node in self._nodes.values():
@@ -472,6 +498,51 @@ class KnowledgeGraph:
                 results.append(node)
                 if len(results) >= max_results:
                     break
+        return results
+
+    def search_by_embedding(self, query: str, top_k: int = 8,
+                            min_score: float = 0.35) -> List[tuple]:
+        """F-11: embedding-based node search for recall integration."""
+        self._ensure_loaded()
+        emb = self._get_embedder()
+        if emb is None:
+            return [(0.5, n) for n in self.find_node_by_content(query, top_k)]
+
+        try:
+            import numpy as np
+            embed_q = emb.embed_query if hasattr(emb, 'embed_query') else emb.embed
+            embed_d = emb.embed_document if hasattr(emb, 'embed_document') else emb.embed
+            q_vec = np.array(embed_q(query), dtype=np.float32)
+            scored = []
+            for node in self._nodes.values():
+                if node.embedding is not None:
+                    n_vec = np.array(node.embedding, dtype=np.float32)
+                else:
+                    n_vec = np.array(embed_d(node.content), dtype=np.float32)
+                sim = float(np.dot(q_vec, n_vec))
+                if sim > min_score:
+                    scored.append((sim, node))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return scored[:top_k]
+        except Exception as e:
+            logger.warning("Embedding search failed: %s", e)
+            return [(0.5, n) for n in self.find_node_by_content(query, top_k)]
+
+    def get_entity_edges(self, node_id: str,
+                         edge_type: Optional[KGEdgeType] = None) -> List[dict]:
+        """Return entity relationship summaries suitable for recall injection."""
+        edges = self.get_edges(node_id, edge_type=edge_type, direction="both")
+        results = []
+        for src, tgt, data in edges:
+            other_id = tgt if src == node_id else src
+            other = self._nodes.get(other_id)
+            if other:
+                results.append({
+                    "edge_type": data.get("edge_type", "?"),
+                    "content": other.content[:150],
+                    "weight": data.get("weight", 0.5),
+                    "node_type": other.node_type.value,
+                })
         return results
 
 

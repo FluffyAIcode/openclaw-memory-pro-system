@@ -282,6 +282,13 @@ def _recency_score(timestamp_str: str, half_life_days: float = 14.0) -> float:
         return 0.5
 
 
+_UPDATE_SIGNALS = frozenset([
+    '换了', '改成', '更新', '不再', '现在是', '搬到', '跳槽',
+    'changed', 'updated', 'switched', 'moved to',
+    'instead', 'actually', 'no longer', 'now i',
+])
+
+
 def score_item(item: dict, query_intent: str) -> float:
     """Multi-dimensional quality score: relevance × recency × importance.
 
@@ -290,6 +297,9 @@ def score_item(item: dict, query_intent: str) -> float:
       - FACTUAL:  heavy relevance
       - THINKING: balanced
       - PLANNING: relevance + light recency
+
+    F-01: memories containing update signals (e.g. "switched", "no longer")
+    receive a +0.1 bonus so that newer versions of the same fact rank higher.
     """
     relevance = item.get("score", 0.0)
     timestamp = item.get("timestamp", "")
@@ -311,8 +321,11 @@ def score_item(item: dict, query_intent: str) -> float:
     else:  # PLANNING
         w_rel, w_rec, w_imp = 0.5, 0.2, 0.3
 
+    content_lower = item.get("content", "").lower()
+    update_bonus = 0.1 if any(s in content_lower for s in _UPDATE_SIGNALS) else 0.0
+
     composite = w_rel * relevance + w_rec * recency + w_imp * importance
-    return round(composite, 4)
+    return round(composite + update_bonus, 4)
 
 
 # ── MMR Deduplication ─────────────────────────────────────────────
@@ -542,6 +555,7 @@ class ContextComposer:
             raw, query, intent, budget, force_cap)
 
         merged = l1_core + l2_concept + l3_background + l4_conflicts
+        merged = self._inject_timeline(merged, query)
 
         gs = budget.global_stats()
         if gs["total_used"] > max_tokens:
@@ -592,26 +606,84 @@ class ContextComposer:
             "warnings": warnings,
         }
 
+    _TEMPORAL_SIGNALS = re.compile(
+        r"(when|last\s+time|first\s+time|how\s+long|how\s+many\s+days|"
+        r"before|after|recently|"
+        r"什么时候|多久|最近|上次|第一次|之前|之后|几天)",
+        re.IGNORECASE,
+    )
+
+    def _inject_timeline(self, merged: list, query: str) -> list:
+        """F-06: prepend a chronological timeline for temporal queries."""
+        if not self._TEMPORAL_SIGNALS.search(query):
+            return merged
+
+        time_entries = [m for m in merged if m.get("timestamp")]
+        if not time_entries:
+            return merged
+
+        time_entries.sort(key=lambda e: e.get("timestamp", ""))
+
+        lines = ["Timeline (chronological):"]
+        for e in time_entries:
+            date = e.get("timestamp", "")[:10]
+            content = e.get("content", "")
+            if content.startswith("[") and "] " in content[:14]:
+                content = content.split("] ", 1)[1]
+            lines.append(f"  {date}: {content[:80]}")
+
+        timeline_item = {
+            "content": "\n".join(lines),
+            "score": 1.0,
+            "composite_score": 1.0,
+            "system": "timeline",
+            "layer": "core",
+        }
+        return [timeline_item] + merged
+
     def _build_core_layer(self, raw: dict, query: str, intent: str,
                           budget: BudgetController,
                           force_cap: int, gate_stats: dict,
                           gate_threshold: float) -> list:
-        """L1: Skills (force-added with cap) + relevance-gated evidence."""
+        """L1: Skills + preferences (F-10) + relevance-gated evidence."""
         items = []
 
         for s in raw.get("skills", []):
+            match_score = s.get("match_score", 0)
+            if match_score < 0.4:
+                continue
             proc = s.get("procedures", "")[:200]
             body = proc if proc else s.get("content", "")[:200]
             entry = {
                 "content": f"[Skill] {s.get('name', '?')}: {body}",
-                "score": 1.0,
-                "composite_score": 1.0,
+                "score": match_score,
+                "composite_score": match_score,
                 "system": "skill",
                 "layer": "core",
                 "metadata": {"skill_id": s.get("id"), "status": s.get("status")},
             }
             if budget.force_add("core", entry["content"], hard_cap=force_cap):
                 items.append(entry)
+
+        if intent in (QueryIntent.PLANNING, QueryIntent.FACTUAL):
+            try:
+                from chronos.learner import get_relevant_preferences
+                prefs = get_relevant_preferences(query, limit=3)
+                for p in prefs:
+                    ptype = p.get("type", "preference")
+                    pval = p.get("value", "")
+                    pref_entry = {
+                        "content": f"[Preference/{ptype}] {pval}",
+                        "score": 0.8,
+                        "composite_score": 0.8,
+                        "system": "chronos",
+                        "layer": "core",
+                    }
+                    if budget.force_add("core", pref_entry["content"],
+                                        hard_cap=force_cap):
+                        items.append(pref_entry)
+            except Exception:
+                pass
 
         evidence = raw.get("evidence", [])
         scored_evidence = []
@@ -637,6 +709,11 @@ class ContextComposer:
             })
         scored_evidence.sort(key=lambda x: x["composite_score"], reverse=True)
 
+        for ev in scored_evidence:
+            ts = ev.get("timestamp", "")[:10]
+            if ts and not ev["content"].startswith("["):
+                ev["content"] = f"[{ts}] {ev['content']}"
+
         deduped = _mmr_select(
             scored_evidence, budget.try_add, "core",
             diversity_lambda=0.7, min_score=MIN_CORE_SCORE)
@@ -650,6 +727,7 @@ class ContextComposer:
                              gate_threshold: float) -> list:
         """L2: KG relations — relevance-gated, scored, MMR-deduped."""
         kg_relations = raw.get("kg_relations", [])
+        logger.debug("KG query for '%s': found %d relations", query[:40], len(kg_relations))
         candidates = []
         for kg_item in kg_relations:
             if kg_item.get("edge_type") == "contradicts":

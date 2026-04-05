@@ -287,10 +287,15 @@ class SkillRegistry:
 
         Requires the skill to have existed for at least _PROMOTE_COOLDOWN_HOURS
         unless force=True. Re-scans content for injection patterns.
+        Deprecated skills cannot be re-promoted (F-03).
         """
         skills = self._load()
         skill = skills.get(skill_id)
         if not skill:
+            return None
+
+        if skill.status == SkillStatus.DEPRECATED:
+            logger.warning("Skill promote blocked: %s is DEPRECATED", skill.name)
             return None
 
         if not force:
@@ -461,7 +466,6 @@ class SkillRegistry:
 
                 skill.content = rewritten.strip()
                 skill.version += 1
-                skill.successes = 0
                 skill.failures = 0
                 skill.updated_at = datetime.now().isoformat()
                 self._save_all()
