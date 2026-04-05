@@ -1,6 +1,6 @@
 ---
 name: openclaw-memory-pro
-version: 0.0.10
+version: 0.0.11
 description: "Enhanced AI memory system — vector store, document-level MSA, knowledge graph, collision engine, executable skills, and closed-loop skill evolution."
 tags:
   - memory
